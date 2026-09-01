@@ -14,6 +14,8 @@ account is verified.
   settings.impeccable-hooks.json   opt-in design-detector hooks
 .agent/skills/impeccable   symlink Impeccable's scripts expect
 docs/skills/README.md      the skill index — start here
+scripts/install-skills.sh  post-clone setup (+ --global for all projects)
+scripts/install-skills.ps1 the same, for Windows
 scripts/update-skills.sh   re-sync skills from upstream
 skills-manifest.json       source repos + pinned commits + licenses
 ```
@@ -25,15 +27,49 @@ scripts.
 ## Quick start
 
 ```bash
-git clone <this repo> && cd Astarr
-claude          # skills are discovered on launch
+git clone https://github.com/Pathi-AmanPal/Astarr.git && cd Astarr
+./scripts/install-skills.sh     # run once after cloning
+claude                          # skills are discovered on launch
 ```
 
-Then, once there's something to design:
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/Pathi-AmanPal/Astarr.git; cd Astarr
+.\scripts\install-skills.ps1
+claude
+```
+
+Type `/` in Claude Code and you should see `impeccable`, `taste-skill`, `animate`
+and the rest. Then, once there's something to design:
 
 ```
 /impeccable init        # records product truth in PRODUCT.md
 ```
+
+### Why the install step
+
+Impeccable's scripts resolve through `.agent/skills/impeccable`, a symlink to
+`.claude/skills/impeccable`. Git for Windows checks symlinks out as plain text files
+unless `core.symlinks` is enabled, which breaks every Impeccable command. The install
+script detects that and recreates the link (a directory junction on Windows — no admin
+rights needed). On macOS and Linux it's a no-op that confirms the link is intact.
+
+### Using the skills in other projects
+
+```bash
+./scripts/install-skills.sh --global      # macOS / Linux / Git Bash
+.\scripts\install-skills.ps1 -Global      # Windows
+```
+
+Copies all 26 skills and the 4 agents into `~/.claude/`, so they load in every project,
+and pre-approves Impeccable's script calls in `~/.claude/settings.json` so it doesn't
+prompt on each run. Existing skills of the same name are left alone unless you pass
+`--force` / `-Force`.
+
+A global install changes where the skills *live*, not where they *work* — Impeccable
+still reads the code of, and writes `PRODUCT.md` / `DESIGN.md` into, whatever project
+you run it in.
 
 See **[docs/skills/README.md](docs/skills/README.md)** for every skill, what it does,
 and which to reach for.

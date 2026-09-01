@@ -26,7 +26,9 @@ asked; the build starts after Figma verification.
 - Vendored skill files under `.claude/skills/` are upstream code. Change them only when
   asked, and note it — `./scripts/update-skills.sh` overwrites local edits.
 - `.agent/skills/impeccable` must stay a symlink; several `allowed-tools` entries and
-  script paths depend on it.
+  script paths depend on it. If it ever shows up as a plain file (a Windows checkout
+  without `core.symlinks`), run `./scripts/install-skills.sh` to repair it rather than
+  editing it by hand.
 - Impeccable's hooks are opt-in (`.claude/settings.impeccable-hooks.json`), not active.
   Don't enable them without asking — they run on every Edit/Write.
 - `PRODUCT.md` and `DESIGN.md` don't exist yet. `/impeccable init` writes the first.

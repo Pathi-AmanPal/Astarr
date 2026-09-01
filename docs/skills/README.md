@@ -98,6 +98,16 @@ Source: [emilkowalski/skills](https://github.com/emilkowalski/skills) (author of
 - **It works but feels dead** → `find-animation-opportunities` → `animate` → `review-animations`.
 - **Final pass before demo** → `/impeccable polish`, then `/impeccable audit`.
 
+## Installing elsewhere
+
+`./scripts/install-skills.sh --global` (or `.\scripts\install-skills.ps1 -Global` on
+Windows) copies every skill and agent into `~/.claude/`, making them available in all
+projects, and merges the Impeccable script permissions into `~/.claude/settings.json`.
+
+Run the same script with no flags after a fresh clone — it repairs
+`.agent/skills/impeccable` when the checkout didn't preserve the symlink, which is the
+default on Windows.
+
 ## Updating / editing
 
 Everything here is ordinary tracked files — edit them directly and commit. To pull
