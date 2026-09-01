@@ -1,0 +1,31 @@
+# deps
+node_modules/
+.pnp
+.pnp.js
+
+# build output
+dist/
+build/
+out/
+.next/
+.turbo/
+.vercel/
+.output/
+
+# env
+.env
+.env.*
+!.env.example
+
+# local agent state
+.claude/settings.local.json
+.impeccable/
+.agent/state/
+
+# editor / os
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json

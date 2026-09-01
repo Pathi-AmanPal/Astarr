@@ -1,0 +1,48 @@
+{
+  "$comment": "Vendored agent skills. Re-sync with ./scripts/update-skills.sh",
+  "installRoot": ".claude/skills",
+  "sources": [
+    {
+      "id": "taste-skill",
+      "repo": "https://github.com/leonxlnx/taste-skill",
+      "commit": "ccbc15639c97057cbfcf32ecebc38ef716e4bb37",
+      "vendoredAt": "2026-09-01",
+      "license": "MIT",
+      "copy": [{ "from": "skills/", "to": ".claude/skills/" }],
+      "skills": [
+        "taste-skill", "taste-skill-v1", "brandkit", "brutalist-skill", "gpt-tasteskill",
+        "image-to-code-skill", "imagegen-frontend-mobile", "imagegen-frontend-web",
+        "minimalist-skill", "output-skill", "redesign-skill", "soft-skill", "stitch-skill"
+      ]
+    },
+    {
+      "id": "emilkowalski-skills",
+      "repo": "https://github.com/emilkowalski/skills",
+      "commit": "d23d7f88a2e21c9e4b1418c7abe420f5c1052ba7",
+      "vendoredAt": "2026-09-01",
+      "license": "see docs/skills/licenses/emilkowalski-skills.LICENSE",
+      "copy": [{ "from": "skills/", "to": ".claude/skills/" }],
+      "skills": [
+        "animate", "animate-expo", "animation-vocabulary", "apple-design", "ask-sonner",
+        "emil-design-eng", "find-animation-opportunities", "improve-animations",
+        "pick-ui-library", "prototype", "review-animations", "write-swift"
+      ]
+    },
+    {
+      "id": "impeccable",
+      "repo": "https://github.com/pbakaus/impeccable",
+      "commit": "6f6af815af7db71602d2fb4bf95f84e677d2414d",
+      "vendoredAt": "2026-09-01",
+      "license": "Apache-2.0",
+      "copy": [
+        { "from": ".claude/skills/impeccable", "to": ".claude/skills/impeccable" },
+        { "from": ".claude/agents/impeccable-*.md", "to": ".claude/agents/" }
+      ],
+      "skills": ["impeccable"],
+      "agents": [
+        "impeccable-asset-producer", "impeccable-documenter",
+        "impeccable-finish-reviewer", "impeccable-manual-edit-applier"
+      ]
+    }
+  ]
+}

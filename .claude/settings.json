@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node .claude/skills/impeccable/scripts/*)",
+      "Bash(node .agent/skills/impeccable/scripts/*)",
+      "Bash(npx impeccable *)",
+      "Bash(./scripts/update-skills.sh*)"
+    ]
+  }
+}
