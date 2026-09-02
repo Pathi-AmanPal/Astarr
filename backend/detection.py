@@ -42,6 +42,25 @@ EG005_MIN_BURST_SIZE = config.param("EG-005", "min_burst_size")
 
 NS001_STDDEV_MULTIPLIER = config.param("NS-001", "stddev_multiplier")
 
+# Peer-cohort baseline. `cohort_by` names a column on `entities`, so it is checked
+# against an allowlist rather than interpolated into SQL on trust -- rules.yaml is
+# configuration, but it is still a file that ends up inside a query.
+NS001_COHORT_BY = config.param("NS-001", "cohort_by")
+NS001_MIN_COHORT_SIZE = config.param("NS-001", "min_cohort_size")
+
+COHORT_COLUMNS = {"sector"}
+if NS001_COHORT_BY not in COHORT_COLUMNS:
+    raise config.ConfigError(
+        f"rules.NS-001.cohort_by must be one of {sorted(COHORT_COLUMNS)}, "
+        f"got {NS001_COHORT_BY!r}"
+    )
+if NS001_MIN_COHORT_SIZE < 2:
+    # At n=1 sigma is 0 and "count < mean - k*0" is "count < count" -- never true, so
+    # the rule would silently stop firing entirely rather than erroring.
+    raise config.ConfigError(
+        f"rules.NS-001.min_cohort_size must be at least 2, got {NS001_MIN_COHORT_SIZE}"
+    )
+
 NS002_MIN_RECORDS = config.param("NS-002", "min_records")
 
 # A category is "expected" when at least this fraction of entities report it.
@@ -73,6 +92,14 @@ def _fetch_records(con) -> list[dict]:
         "escalated", "disposition", "investigation_notes", "closure_time_minutes",
     ]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def _entity_cohorts(con) -> dict[str, str]:
+    """entity_id -> its cohort key. Column name is allowlisted at import."""
+    rows = con.execute(
+        f"SELECT entity_id, {NS001_COHORT_BY} FROM entities ORDER BY entity_id"
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
 
 
 def _entity_ids(con) -> list[str]:
@@ -216,30 +243,81 @@ def eg005(records: list[dict], entity_ids: list[str]) -> list[dict]:
 
 
 # --- NS-001 ----------------------------------------------------------------------
-def ns001(records: list[dict], entity_ids: list[str]) -> list[dict]:
+def _baseline(values: list[int]) -> tuple[float, float, float]:
+    """mean, population sigma, and the low-volume threshold for a set of counts.
+
+    pstdev, not stdev. PRD Section 12 specifies population standard deviation, and
+    DuckDB's STDDEV() is stddev_samp -- an easy mismatch to introduce accidentally.
+    """
+    mean = statistics.fmean(values)
+    std = statistics.pstdev(values)
+    return mean, std, mean - NS001_STDDEV_MULTIPLIER * std
+
+
+def ns001(records: list[dict], entity_ids: list[str],
+          cohorts: dict[str, str] | None = None) -> list[dict]:
+    """Alert volume below the peer baseline, with an explicit validity gate.
+
+    An entity is compared against its own cohort ONLY where that cohort has at least
+    `min_cohort_size` members. Otherwise it falls back to the global baseline, and the
+    finding says so in words.
+
+    The fallback is the honest half of this rule, not a workaround. A cohort of one has
+    sigma = 0, which turns the test into "count < count" and silently switches the rule
+    off; a cohort of two places both members exactly one sigma from their own mean by
+    construction, so any threshold drawn from it is arithmetic rather than evidence.
+    Comparing against a group too small to have a distribution is not a peer comparison,
+    it is a number that looks like one.
+    """
+    cohorts = cohorts or {}
     counts = {eid: 0 for eid in entity_ids}
     for r in records:
         counts[r["entity_id"]] = counts.get(r["entity_id"], 0) + 1
 
-    values = [counts[eid] for eid in entity_ids]
-    mean = statistics.fmean(values)
-    # pstdev, not stdev. PRD Section 12 specifies population standard deviation, and
-    # DuckDB's STDDEV() is stddev_samp -- an easy mismatch to introduce accidentally.
-    std = statistics.pstdev(values)
-    threshold = mean - NS001_STDDEV_MULTIPLIER * std
+    global_mean, _global_std, global_threshold = _baseline(
+        [counts[eid] for eid in entity_ids]
+    )
+
+    members: dict[str, list[str]] = {}
+    for eid in entity_ids:
+        members.setdefault(cohorts.get(eid, ""), []).append(eid)
 
     out = []
     for entity_id in entity_ids:
+        cohort = cohorts.get(entity_id, "")
+        peers = sorted(members.get(cohort, []))
+
+        if cohort and len(peers) >= NS001_MIN_COHORT_SIZE:
+            mean, _std, threshold = _baseline([counts[p] for p in peers])
+            basis = (
+                f"its {cohort} peer cohort ({len(peers)} entities, average "
+                f"{_fmt(mean)} alerts)"
+            )
+            qualifier = ""
+        else:
+            mean, threshold = global_mean, global_threshold
+            basis = f"the dataset average of {_fmt(mean)} alerts across all {len(entity_ids)} entities"
+            # State the fallback rather than letting a global comparison read as a peer
+            # one. This sentence is the rule's own audit trail.
+            qualifier = (
+                f" Peer-cohort comparison was not available: this entity's "
+                f"{cohort or 'cohort'} group holds "
+                f"{len(peers)} {'entity' if len(peers) == 1 else 'entities'}, below the "
+                f"{NS001_MIN_COHORT_SIZE}-entity minimum for a statistically valid "
+                f"baseline, so the more conservative global baseline was used."
+            )
+
         if counts[entity_id] < threshold:
             ids = sorted(r["record_id"] for r in records if r["entity_id"] == entity_id)
             out.append({
                 "entity_id": entity_id,
                 "rule_id": "NS-001",
                 "finding_type": NEGATIVE_SPACE,
-                "title": "Alert volume significantly below dataset average",
+                "title": "Alert volume significantly below peer baseline",
                 "explanation": (
-                    f"This entity generated {counts[entity_id]} alerts, compared to a dataset "
-                    f"average of {_fmt(mean)} - well below expectation for a comparable environment."
+                    f"This entity generated {counts[entity_id]} alerts, compared to "
+                    f"{basis} - well below expectation for a comparable environment."
+                    f"{qualifier}"
                 ),
                 "evidence_record_ids": ids,
             })
@@ -291,6 +369,7 @@ def run_detection(con) -> int:
     """Recompute every finding from scratch. Returns the number generated."""
     records = _fetch_records(con)
     entity_ids = _entity_ids(con)
+    cohorts = _entity_cohorts(con)
 
     findings: list[dict] = []
     findings += eg001(records)
@@ -298,7 +377,7 @@ def run_detection(con) -> int:
     findings += eg003(records, entity_ids)
     findings += eg004(records)
     findings += eg005(records, entity_ids)
-    findings += ns001(records, entity_ids)
+    findings += ns001(records, entity_ids, cohorts)
     findings += ns002(records, entity_ids)
 
     # ML corroboration runs LAST and reads what the deterministic engine produced.

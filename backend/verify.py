@@ -17,7 +17,8 @@ import tempfile
 from collections import Counter
 
 import db
-from detection import NS001_STDDEV_MULTIPLIER, ns002_min_reporting, run_detection
+from detection import (NS001_MIN_COHORT_SIZE, NS001_STDDEV_MULTIPLIER, ns001,
+                       ns002_min_reporting, run_detection)
 from ml import ML_RULE_ID, build_features, ml_corroboration
 from scoring import TIER_CAP, TIER_WEIGHTS, ranked_entities, tier_breakdown
 from seed import BLIND_SPOT_CATEGORY, seed
@@ -86,6 +87,70 @@ def main() -> int:
     check("clean-entity margin is comfortable (>= 3.0)",
           next_lowest - threshold >= 3.0,
           f"{next_lowest - threshold:.2f} above threshold")
+
+    print("\n2b. NS-001 peer-cohort validity gate (Phase 2 Day 2)")
+    # The gate decides whether a peer comparison is defensible at all. At 12 entities
+    # across 12 distinct sectors every cohort holds one member, so nothing qualifies and
+    # every entity uses the global baseline -- identical to Phase 1 behaviour.
+    sectors = dict(con.execute("SELECT entity_id, sector FROM entities").fetchall())
+    sizes = Counter(sectors.values())
+    print(f"      {len(sectors)} entities across {len(sizes)} distinct sectors; "
+          f"cohort sizes = {sorted(sizes.values())}")
+    check("every sector cohort is below the minimum, so all fall back to global",
+          all(n < NS001_MIN_COHORT_SIZE for n in sizes.values()),
+          f"largest cohort = {max(sizes.values())}, minimum = {NS001_MIN_COHORT_SIZE}")
+    check("the minimum is at least 2 (at n=1, sigma=0 turns the test into "
+          "'count < count' and the rule silently stops firing)",
+          NS001_MIN_COHORT_SIZE >= 2, f"min_cohort_size = {NS001_MIN_COHORT_SIZE}")
+
+    ns001_rows = con.execute(
+        "SELECT explanation FROM findings WHERE rule_id = 'NS-001'").fetchall()
+    check("the finding states in words that it fell back to the global baseline",
+          all("global baseline was used" in r[0] for r in ns001_rows),
+          "a global comparison must never read as a peer one")
+    check("...and names the cohort it could not use, with its size",
+          all("holds 1 entity" in r[0] for r in ns001_rows))
+
+    # The gate must be live code, not decoration. Rerun the rule against a synthetic
+    # cohort assignment where sectors DO repeat, and confirm it switches baselines.
+    records = con.execute(
+        "SELECT record_id, entity_id FROM records ORDER BY record_id").fetchall()
+    recs = [{"record_id": r[0], "entity_id": r[1]} for r in records]
+    eids = sorted(sectors)
+
+    # (a) all twelve in one qualifying cohort -> cohort baseline, not global
+    one_cohort = {e: "Shared" for e in eids}
+    got = ns001(recs, eids, one_cohort)
+    check("with a qualifying cohort the rule uses the cohort baseline",
+          len(got) == 1 and "Shared peer cohort (12 entities" in got[0]["explanation"],
+          got[0]["explanation"][:70] if got else "no finding")
+    check("...and stops claiming it fell back",
+          got and "global baseline was used" not in got[0]["explanation"])
+
+    # (b) a cohort one member short of the bar -> must still fall back
+    short = {e: ("Small" if e in eids[:NS001_MIN_COHORT_SIZE - 1] else "Rest")
+             for e in eids}
+    got_short = ns001(recs, eids, short)
+    cse02 = [f for f in got_short if f["entity_id"] == "CSE-02"]
+    check(f"a cohort of {NS001_MIN_COHORT_SIZE - 1} (one short) still falls back",
+          bool(cse02) and "global baseline was used" in cse02[0]["explanation"]
+          if any(short[e] == "Small" for e in ["CSE-02"]) else True,
+          f"CSE-02 cohort = {short['CSE-02']}, "
+          f"size = {sum(1 for e in eids if short[e] == short['CSE-02'])}")
+
+    # (c) the degenerate case the gate exists to prevent: without it, one-member
+    #     cohorts give sigma=0 and NS-001 would find nothing at all.
+    import detection as _d
+    _saved = _d.NS001_MIN_COHORT_SIZE
+    try:
+        _d.NS001_MIN_COHORT_SIZE = 1          # disable the gate
+        ungated = _d.ns001(recs, eids, sectors)
+    finally:
+        _d.NS001_MIN_COHORT_SIZE = _saved
+    check("without the gate, one-member cohorts silence NS-001 entirely "
+          "(this is what the gate prevents)",
+          ungated == [], f"{len(ungated)} findings with the gate disabled")
+    check("with the gate, NS-001 still fires on CSE-02", len(ns001_rows) == 1)
 
     print("\n3. Each rule fires exactly where planted")
     check("EG-001: 3 findings, all CSE-01", entities_for(con, "EG-001") == ["CSE-01"] * 3)

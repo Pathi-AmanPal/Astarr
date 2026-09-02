@@ -165,7 +165,9 @@ Four rules, thresholds now read from `backend/rules.yaml` (see the Phase 2 amend
 below; they were hardcoded through Phase 1): `EG-001` rapid closure without escalation (weight 35,
 per record), `EG-002` critical alert without escalation (25, per record), `EG-003`
 repetitive/template investigation notes (20, per entity, ≥3 records sharing notes),
-`NS-001` below-average alert volume (30, per entity, below `mean − 1.5 × stddev`).
+`NS-001` below-average alert volume (30, per entity, below `mean − 1.5 × stddev`,
+against the entity's sector cohort where that cohort has ≥ 5 members, otherwise against
+the global baseline — see the peer-cohort amendment below).
 EG-001 and EG-002 may both fire on one record; keeping both is intentional.
 
 `ML-001` ML corroboration (10, per entity, only where an EG or NS finding already exists).
@@ -369,14 +371,84 @@ caution; CSE-06 and the zero-scoring entities clear), so no entity silently chan
 as a side effect of the formula change. Chosen to preserve intent, not derived from first
 principles, and kept in two named constants in `EntityList.tsx`.
 
+### Peer-cohort baseline for NS-001 (Phase 2 amendment, 2026-09-02)
+
+PRD §9 deferred peer-cohort grouping to Phase 2. The infrastructure is now built, and
+it ships with an explicit **validity gate**: an entity is compared against its own
+sector cohort **only where that cohort has at least 5 members**, and otherwise falls
+back to the global baseline — saying so, in words, inside the finding itself.
+
+**At 12 entities nothing qualifies, and that is the honest answer.** The dataset has
+12 entities across **12 distinct sectors**, so every cohort holds exactly one member.
+Every entity therefore uses the global baseline today, and NS-001's behaviour is
+byte-for-byte what Phase 1 shipped. Cohorting activates on its own the moment sectors
+genuinely repeat — no code change, no redeploy.
+
+**Why a gate rather than just cohorting.** This was measured before it was built, not
+assumed:
+
+| grouping | cohorts | CSE-02 still flagged? | clean entity crossing in | tightest clean margin |
+|---|---|---|---|---|
+| global (today) | 1 × 12 | yes | none | **+6.28** |
+| by sector | 12 × 1 | **no** | — | 0.00 (dead) |
+| domain merge (5 groups) | 3,2,3,2,2 | **no** | none | +0.22 |
+| two-way split (7/5) | 7, 5 | yes | none | **+0.21** |
+| size bands | 1, 11 | **no** | **CSE-08** | −0.56 |
+
+- **At n=1, σ = 0**, so `count < mean − 1.5×0` reduces to `count < count` — never true.
+  Sector cohorting would not weaken NS-001, it would **switch it off entirely**.
+  `verify.py` proves this empirically: with the gate disabled, NS-001 returns zero
+  findings.
+- **At n=2**, both members sit exactly one σ from their own mean by construction, so any
+  threshold drawn from the pair is arithmetic rather than evidence.
+- The domain merge looks reasonable and is the worst of the options: pairing Telecom
+  (CSE-02, 4 alerts) with Space Research (CSE-12, 23) gives σ = 9.50 and a threshold of
+  **−0.75**. A negative alert count is unreachable, so **CSE-02 would be silently
+  exonerated** — cleared by being paired with one dissimilar peer.
+- The two-way split is the only shape where every cohort reaches 5, and it still fails
+  the standing rule: the clean group's counts cluster so tightly that σ falls to 1.67
+  and the threshold rises to 19.79, leaving **CSE-06 at 20 alerts just 0.21 above the
+  line**. One record's difference turns a clean entity into a false finding. The
+  ≥ 3.0 margin `verify.py` asserts would fail.
+- Size banding is **circular** — it groups entities by volume and then tests volume —
+  and already produces a false positive on CSE-08 at −0.56.
+
+**Say this on stage, do not hide it.** Asked "does this really use peer groups?", the
+answer is:
+
+> *"Yes — the cohort comparison is real, and every cohort is checked for statistical
+> validity first: a minimum of 5 members. In this dataset of 12 entities across 12
+> unique sectors no cohort reaches that, so the system falls back to the conservative
+> global baseline and says so in the finding. As the dataset scales, cohorting activates
+> by itself."*
+
+A limitation that is measured, gated in code, stated in the finding text and defensible
+in one sentence is a **strength**. A cohort of one dressed up as a peer comparison would
+undermine the evidence-graph credibility that the whole tool rests on. This is the
+"claim exactly what is implemented" principle applied to statistics.
+
+**The finding text carries the audit trail**, so the honesty survives without the
+document:
+
+> This entity generated 4 alerts, compared to the dataset average of 20.67 alerts across
+> all 12 entities — well below expectation for a comparable environment. Peer-cohort
+> comparison was not available: this entity's Telecom group holds 1 entity, below the
+> 5-entity minimum for a statistically valid baseline, so the more conservative global
+> baseline was used.
+
+`cohort_by` and `min_cohort_size` live in `rules.yaml`. `cohort_by` names a column on
+`entities` and is checked against an allowlist rather than interpolated into SQL on
+trust; `min_cohort_size` below 2 is rejected at startup, because that is the value that
+would silently disable the rule.
+
 ### Explicitly out of scope for Phase 1
 
 ~~YAML-configurable thresholds~~ and ~~the weighted-tier scoring formula~~ (**both
 implemented in Phase 2, see amendments above**), multi-format
 ingestion, any file-upload UI or endpoint accepting user-supplied data, Docker/offline
-image packaging, authentication and roles, peer-cohort grouping for Negative Space, trend
-analysis and time-series charts, rule/model versioning and run history, and the
-weighted-tier scoring formula. These are documented and planned, not forgotten — they
+image packaging, authentication and roles, ~~peer-cohort grouping for Negative Space~~
+(**infrastructure implemented in Phase 2 behind a validity gate, see amendment above**),
+trend analysis and time-series charts, and rule/model versioning and run history. These are documented and planned, not forgotten — they
 belong to the Phase 2 build.
 
 ## Brand Commitments
@@ -406,9 +478,11 @@ belong to the Phase 2 build.
 
 - **No real SOC data, no real entity, no customer, no deployment.** The dataset is
   synthetic and explicitly labelled as a demo dataset.
-- **No peer-cohort analysis.** `NS-001` is a simplified comparison against the global
-  dataset average. The PRD requires a small footer note on that finding's evidence view
-  saying so, and forbids claiming peer-cohort comparison anywhere in Phase 1 UI copy.
+- **No peer-cohort analysis is in effect on this dataset — though the capability exists.**
+  `NS-001` performs a cohort comparison only where the cohort has ≥ 5 members; with 12
+  entities across 12 distinct sectors nothing qualifies, so every finding uses the global
+  baseline. Never claim a peer comparison that did not happen: the finding text and the
+  evidence-view footnote both state which baseline was used and why.
 - **No accuracy figures, no benchmarks, no validation claims.** An Isolation Forest now
   runs (see the scope amendment above), but nothing may state or imply it was validated,
   tuned, or measured for accuracy — it was not. It is an unsupervised outlier signal over a

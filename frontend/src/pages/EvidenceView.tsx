@@ -180,10 +180,17 @@ export default function EvidenceView() {
           alert history rather than a model-selected subset.
         </p>
       )}
+      {/* NS-001 now performs a peer-cohort comparison where the cohort is
+          statistically valid, and says in its own explanation which baseline it used
+          and why. This footnote must not contradict that sentence on the same screen,
+          so it explains the gate rather than claiming the feature is absent. */}
       {evidence.rule_id === "NS-001" && (
         <p className="footnote">
-          Simplified dataset-average comparison — peer-cohort grouping planned for next
-          phase.
+          Peer-cohort comparison is used only where a cohort is large enough to support
+          it (at least 5 entities). Where it is not, the rule falls back to the global
+          dataset baseline and states so above — a cohort of one has no spread to
+          measure against, so a threshold drawn from it would be arithmetic rather than
+          evidence.
         </p>
       )}
       {evidence.rule_id === "NS-002" && (

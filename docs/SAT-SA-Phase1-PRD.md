@@ -125,7 +125,7 @@ IF total_count(entity) < (mean_count - 1.5 * std_count):
 - `title = "Alert volume significantly below dataset average"`
 - `explanation` template: `"This entity generated {total_count} alerts, compared to a dataset average of {mean_count} — well below expectation for a comparable environment."`
 - `evidence_record_ids` = all record_ids for that entity (so the evidence view can show "here is everything this entity submitted — notice how little there is").
-- **Explicitly note in the UI** (small footer text on the finding's evidence view) that this is a simplified global-average comparison, and the full version (peer-cohort grouping by sector/size/criticality) is planned for the next phase. Do not claim peer-cohort comparison anywhere in Phase 1 UI copy.
+- ~~**Explicitly note in the UI** (small footer text on the finding's evidence view) that this is a simplified global-average comparison, and the full version (peer-cohort grouping by sector/size/criticality) is planned for the next phase. Do not claim peer-cohort comparison anywhere in Phase 1 UI copy.~~ **Superseded by the Phase 2 Day 2 amendment:** the rule now performs peer-cohort comparison where a cohort is statistically valid (≥ 5 members) and falls back to the global baseline otherwise. The finding's own `explanation` names which baseline was used and why, so the UI no longer needs separate footer copy to stay honest — but it must still never claim a peer comparison that did not happen.
 
 ---
 
@@ -190,7 +190,7 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 ### Screen 3 — Evidence View (route `/findings/:id`, or a modal — either is acceptable)
 - Show the finding's `explanation` sentence prominently at the top.
 - Below it, a table of every record in `records` (full fields: record_id, severity, opened_at, closed_at, closure_time_minutes, escalated, investigation_notes).
-- For `NS-001` findings, add a small footer note: *"Simplified dataset-average comparison — peer-cohort grouping planned for next phase."*
+- ~~For `NS-001` findings, add a small footer note: *"Simplified dataset-average comparison — peer-cohort grouping planned for next phase."*~~ **Superseded (Phase 2 Day 2):** the footnote now explains the ≥ 5-member validity gate and the fallback, because the finding's own explanation already names the baseline used. The two must never contradict each other on the same screen.
 
 ### Global requirements
 - No screen may ever render a raw JavaScript error, blank white page, or unhandled network-error state. Every API call must be wrapped with a loading state and an error state that shows a plain message and does not break navigation.
@@ -228,14 +228,27 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 > `PyYAML>=6.0` is added to `backend/requirements.txt` under the same §11 amendment process
 > used for `scikit-learn`/`shap`.
 
+> **AMENDMENT 2026-09-02 (Phase 2, Day 2) — peer-cohort grouping for NS-001 is no longer
+> deferred, with an explicit validity gate.** An entity is compared against its sector
+> cohort **only where that cohort has ≥ 5 members** (`cohort_by`, `min_cohort_size` in
+> `rules.yaml`); otherwise the rule falls back to the global baseline and states that in
+> the finding text. **At 12 entities across 12 distinct sectors, no cohort qualifies**, so
+> every entity uses the global baseline and NS-001's behaviour is unchanged from Phase 1 —
+> the full findings dump differs only in this rule's title and explanation wording.
+> Cohorting activates without a code change once sectors repeat. The gate is not
+> decoration: at n=1, σ = 0 and the test `count < mean − 1.5×σ` reduces to `count < count`,
+> so ungated sector cohorting would silence NS-001 completely — `verify.py` asserts exactly
+> that by disabling the gate and confirming zero findings. See PRODUCT.md for the measured
+> comparison of every candidate grouping.
+
 - ~~Isolation Forest / any ML model / SHAP explainability layer~~ — **implemented, see amendment above**
 - ~~YAML-configurable rule thresholds (hardcoded constants in code are fine for Phase 1)~~ — **implemented in Phase 2, see amendment below**
 - Multi-format ingestion (JSON, DB export, API ingestion) or any file upload UI
 - Docker / offline image packaging (`uvicorn` + `npm run dev` run locally is sufficient for this phase)
 - Authentication, multi-user roles, permissions
-- Peer-cohort grouping for Negative Space (sector/size/criticality-based) — Phase 1 uses the simplified global-average version in Section 4 (NS-001) only
 - Trend analysis, time-series charts, historical comparison across multiple analysis runs
 - Rule/model versioning, analysis-run history
+- ~~Peer-cohort grouping for Negative Space (sector/size/criticality-based)~~ — **infrastructure implemented in Phase 2 with a validity gate; see the amendment below**
 - ~~Weighted-tier scoring formula (e.g. 35% rules + 30% stats + …) — Phase 1 uses the simple additive-and-cap formula in Section 5 only~~ — **implemented in Phase 2, see the Section 5 amendment**
 
 These are documented, planned, and already described in the project's full architecture (see prior deliverables) — they belong to the 36-hour national-round build, not this phase. Do not implement them now even partially; a half-built version of any of these is worse for the live demo than not having it, because it increases surface area for something to break on stage.

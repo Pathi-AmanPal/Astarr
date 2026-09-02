@@ -73,6 +73,25 @@ rules:
     # which is an easy and silent mismatch to introduce here.
     stddev_multiplier: 1.5
 
+    # Peer-cohort baseline (PRD Section 9 deferral, Phase 2 Day 2).
+    # An entity is compared against its own cohort ONLY where that cohort is large
+    # enough for a mean and sigma to mean anything; otherwise it falls back to the
+    # global baseline. The fallback is not a failure mode, it is the rule refusing to
+    # make a claim the data cannot support.
+    #
+    # At 12 entities across 12 DISTINCT sectors every cohort holds exactly one member,
+    # so nothing qualifies today and every entity uses the global baseline -- which is
+    # precisely the Phase 1 behaviour, unchanged. Cohorting activates on its own as
+    # soon as sectors genuinely repeat. No code change required.
+    #
+    # Why 5: at n=1 sigma is 0 and the test "count < mean - 1.5*0" reduces to
+    # "count < count", which is never true -- the rule would silently stop firing
+    # altogether. At n=2 the two members sit exactly 1 sigma either side of their own
+    # mean by construction, so the threshold is arithmetic, not evidence. 5 is the
+    # smallest cohort where a 1.5-sigma statement is defensible in front of an auditor.
+    cohort_by: sector
+    min_cohort_size: 5
+
   NS-002:
     # A category absent from an entity that most of its peers report.
     # Proportional, never absolute. Phase 1 originally hardcoded 6, which was 75% of 8
