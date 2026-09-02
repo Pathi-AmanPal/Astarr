@@ -9,6 +9,26 @@
 # malformed key raises at startup rather than silently reverting a threshold to
 # something plausible. A rule that cannot be configured correctly must not run at all.
 
+# --- Risk scoring (PRD Section 5, Phase 2 amendment) ------------------------------
+# Weighted-tier formula. Each tier's raw weight-sum is capped INDIVIDUALLY at
+# `tier_cap` before weighting; because the three tier weights sum to exactly 1.0, the
+# result is a convex combination of three values that are each <= tier_cap, so it can
+# never exceed tier_cap. That is what removes the need for an outer MIN(100, ...).
+#
+# The sum-to-1.0 invariant is load-bearing and invisible: raise one weight without
+# lowering another and the <= 100 guarantee silently breaks. config.py asserts it at
+# startup rather than trusting whoever edits this block next.
+#
+# Tiers are keyed by finding_type, not by rule-id prefix -- finding_type is what is
+# actually stored on each finding, so a new rule cannot land in the wrong tier by
+# being named badly.
+scoring:
+  tier_cap: 100
+  tier_weights:
+    EXECUTION_GAP: 0.45
+    NEGATIVE_SPACE: 0.40
+    ML_CORROBORATION: 0.15
+
 weights:
   EG-001: 35
   EG-002: 25

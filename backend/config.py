@@ -71,6 +71,28 @@ def param(rule_id: str, key: str):
     return _require(rule(rule_id), key, f"rules.{rule_id}")
 
 
+# --- Risk scoring (PRD Section 5, Phase 2 amendment) ------------------------------
+_SCORING = _require(_RAW, "scoring", "rules.yaml")
+
+TIER_CAP: int = int(_require(_SCORING, "tier_cap", "scoring"))
+TIER_WEIGHTS: dict[str, float] = {
+    tier: float(weight)
+    for tier, weight in _require(_SCORING, "tier_weights", "scoring").items()
+}
+
+# The <= TIER_CAP guarantee is a convex-combination argument and holds only while the
+# tier weights sum to exactly 1.0. Checked here, at import, because the failure mode
+# otherwise is a score above the cap appearing on stage with nothing having errored.
+_TIER_SUM = sum(TIER_WEIGHTS.values())
+if abs(_TIER_SUM - 1.0) > 1e-9:
+    raise ConfigError(
+        f"scoring.tier_weights must sum to exactly 1.0, got {_TIER_SUM!r} "
+        f"({TIER_WEIGHTS}). The cap-free <= {TIER_CAP} guarantee depends on it."
+    )
+if any(w < 0 for w in TIER_WEIGHTS.values()):
+    raise ConfigError(f"scoring.tier_weights must all be non-negative: {TIER_WEIGHTS}")
+
+
 def severities(rule_id: str) -> tuple[str, ...]:
     """Severity list as a tuple -- membership tests, not accidental mutation."""
     return tuple(param(rule_id, "severities"))

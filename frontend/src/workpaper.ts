@@ -39,3 +39,17 @@ export function findingRef(entityId: string, ruleId: string): string {
     ? `${entityRef(entityId)}.—`
     : `${entityRef(entityId)}.${section}`;
 }
+
+/** Scores are floats under the weighted-tier formula (PRD Section 5 amendment).
+    Fixed two decimals, always: this is a workpaper, and a column where some rows
+    read "18" and others "24.75" cannot be scanned or footed by eye. */
+export function formatScore(score: number): string {
+  return score.toFixed(2);
+}
+
+/** Human label for a scoring tier. */
+export const TIER_LABEL: Record<string, string> = {
+  EXECUTION_GAP: "Execution Gap",
+  NEGATIVE_SPACE: "Negative Space",
+  ML_CORROBORATION: "ML Corroboration",
+};

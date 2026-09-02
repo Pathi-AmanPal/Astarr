@@ -7,12 +7,26 @@ import { useNavigate } from "react-router-dom";
 
 import { ApiError, EntitySummary, getEntities, resetDemo } from "../api";
 import { Loading, ErrorState } from "../components/States";
-import { WORKPAPER_ID, entityRef } from "../workpaper";
+import { WORKPAPER_ID, entityRef, formatScore } from "../workpaper";
 
 /** Severity edge mark. The field stays achromatic; only this edge carries colour. */
+/* Band thresholds for the weighted-tier scale (PRD Section 5 amendment).
+   These were 60 and 30 on the Phase 1 additive 0-100 scale. They are NOT a naive
+   rescale: the old score conflated tiers, so a 40 earned from Negative Space and a 40
+   earned from Execution Gap looked identical, and weighting now separates them. 50/10
+   is the pair that preserves the existing three-band grouping exactly -- CSE-01 alone
+   in exception, CSE-05/CSE-03/CSE-02 in caution, CSE-06 and the zero-scoring entities
+   clear -- so no entity silently changes colour as a side effect of the formula change.
+
+   Chosen to preserve intent rather than derived from first principles: banding is a
+   supervisory judgement, not arithmetic, and is worth a deliberate review. Note the
+   attainable maximum is 86.5, not 100 (the ML tier cannot exceed 10). */
+const BAND_EXCEPTION = 50;
+const BAND_CAUTION = 10;
+
 function edgeClass(score: number): string {
-  if (score > 60) return "edge-exception";
-  if (score >= 30) return "edge-caution";
+  if (score > BAND_EXCEPTION) return "edge-exception";
+  if (score >= BAND_CAUTION) return "edge-caution";
   return "edge-clear";
 }
 
@@ -174,8 +188,12 @@ export default function EntityList() {
                   </td>
                   <td className="col-score">
                     <span className={`score-cell ${edgeClass(e.risk_score)}`}>
-                      <span className="score-value">{e.risk_score}</span>
-                      {e.capped && <span className="score-max">Maximum</span>}
+                      <span className="score-value">{formatScore(e.risk_score)}</span>
+                      {/* NOT "Maximum": under weighted tiers a capped tier does not
+                          mean a maximum score. CSE-01 caps its Execution Gap tier at
+                          100 and still scores 56.50, and labelling that "Maximum" on
+                          the ranking screen would be plainly false. */}
+                      {e.capped && <span className="score-max">Tier capped</span>}
                     </span>
                   </td>
                 </tr>

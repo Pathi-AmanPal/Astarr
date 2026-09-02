@@ -14,11 +14,12 @@ import os
 import statistics
 import sys
 import tempfile
+from collections import Counter
 
 import db
 from detection import NS001_STDDEV_MULTIPLIER, ns002_min_reporting, run_detection
 from ml import ML_RULE_ID, build_features, ml_corroboration
-from scoring import ranked_entities
+from scoring import TIER_CAP, TIER_WEIGHTS, ranked_entities, tier_breakdown
 from seed import BLIND_SPOT_CATEGORY, seed
 
 PASS, FAIL = "PASS", "FAIL"
@@ -194,30 +195,85 @@ def main() -> int:
     check("no EG-004/EG-005 evidence also trips EG-001/002/003", overlap == 0,
           f"{overlap} overlaps")
 
-    print("\n7. Exact score vector")
+    print("\n7. Exact score vector (weighted-tier formula, PRD Section 5 amendment)")
+    # 0.45*EG + 0.40*NS + 0.15*ML, each tier capped at 100 individually first.
     expected_scores = {
-        "CSE-01": 100, "CSE-05": 55, "CSE-03": 40, "CSE-02": 40,
-        "CSE-06": 15, "CSE-04": 0, "CSE-07": 0, "CSE-08": 0,
-        "CSE-09": 0, "CSE-10": 0, "CSE-11": 0, "CSE-12": 0,
+        "CSE-01": 56.5,   # EG 215->100, NS 25, ML 10
+        "CSE-05": 24.75,  # EG 55
+        "CSE-03": 18.0,   # EG 40
+        "CSE-02": 13.5,   # NS 30, ML 10
+        "CSE-06": 6.75,   # EG 15
+        "CSE-04": 0.0, "CSE-07": 0.0, "CSE-08": 0.0,
+        "CSE-09": 0.0, "CSE-10": 0.0, "CSE-11": 0.0, "CSE-12": 0.0,
     }
     ranked = ranked_entities(con)
     actual = {e["entity_id"]: e["risk_score"] for e in ranked}
     check("scores match the confirmed plan", actual == expected_scores, str(actual))
+    check("every score is a float, not an int",
+          all(isinstance(e["risk_score"], float) for e in ranked))
     check("CSE-01 ranks first", ranked[0]["entity_id"] == "CSE-01")
     check("CSE-01 is strictly highest (no tie)",
           ranked[0]["risk_score"] > ranked[1]["risk_score"],
           f"{ranked[0]['risk_score']} vs {ranked[1]['risk_score']}")
-    check("CSE-01 raw sum is 250 and flagged capped",
+    check("CSE-01 raw sum is still 250 and a tier is flagged capped",
           ranked[0]["risk_score_raw"] == 250 and ranked[0]["capped"],
           f"raw={ranked[0]['risk_score_raw']}")
 
-    # CSE-02 and CSE-03 now tie at 40. The tie itself is fine; what must hold is that
-    # the ordering between them is stable, or Section 10 step 5 fails on stage.
+    print("\n7b. The cap-free <= 100 guarantee")
+    # The proof is a convex-combination argument and holds only while the tier weights
+    # sum to 1.0. config.py asserts this at import; assert it again here so the
+    # verification stands on its own rather than trusting the module it checks.
+    total_weight = sum(TIER_WEIGHTS.values())
+    check("tier weights sum to exactly 1.0", abs(total_weight - 1.0) < 1e-9,
+          f"{TIER_WEIGHTS} -> {total_weight}")
+    check("every score lies within [0, 100] with no outer cap applied",
+          all(0 <= e["risk_score"] <= TIER_CAP for e in ranked))
+    # Saturate all three tiers on paper: the formula must land exactly on the cap.
+    saturated = tier_breakdown({t: 10_000 for t in TIER_WEIGHTS})
+    check("all three tiers saturated gives exactly 100, never more",
+          sum(t["contribution"] for t in saturated) == float(TIER_CAP),
+          f"{sum(t['contribution'] for t in saturated)}")
+
+    print("\n7c. Ranking consequences of the amendment (stated, not incidental)")
+    # CSE-02 and CSE-03 both scored 40 under the additive formula and were separated
+    # only by the entity_id tiebreak. Tier weighting separates them on merit: CSE-03's
+    # 40 is all Execution Gap (x0.45), CSE-02's is Negative Space plus ML (x0.40/x0.15).
     order = [e["entity_id"] for e in ranked]
-    tied = [e["entity_id"] for e in ranked if e["risk_score"] == 40]
-    check("tied entities order by entity_id ascending", tied == sorted(tied), str(tied))
+    check("CSE-03 now outranks CSE-02 (the one intended ranking change)",
+          order.index("CSE-03") < order.index("CSE-02"),
+          f"CSE-03 at #{order.index('CSE-03')+1}, CSE-02 at #{order.index('CSE-02')+1}")
+    check("the old 40-point tie is gone",
+          ranked[order.index("CSE-03")]["risk_score"]
+          != ranked[order.index("CSE-02")]["risk_score"], "18.0 vs 13.5")
+    check("ranking is otherwise unchanged from the additive formula",
+          [order[i] for i in (0, 1, 4)] == ["CSE-01", "CSE-05", "CSE-06"],
+          f"1st/2nd/5th = {[order[i] for i in (0, 1, 4)]}")
+
+    # Seven entities still score zero, so the tiebreak stayed load-bearing even though
+    # weighting happened to break the 40-point tie.
+    dupes = {v: k for k, v in Counter(e["risk_score"] for e in ranked).items() if v > 1}
+    check("the only remaining tie is the seven zero-scoring entities", dupes == {7: 0.0},
+          str(dupes))
+    zeros = [e["entity_id"] for e in ranked if e["risk_score"] == 0.0]
+    check("tied entities order by entity_id ascending", zeros == sorted(zeros), str(zeros))
     check("full ranking is stable across a refetch",
           order == [e["entity_id"] for e in ranked_entities(con)])
+
+    print("\n7d. Tier breakdown is footable (PRD Section 5 explainability)")
+    # Under tier weighting the score no longer equals the sum of the finding weights on
+    # screen, so the tier rows are what make Section 5's "visible breakdown" true.
+    for e in ranked:
+        check(f"{e['entity_id']}: tier contributions sum to the score",
+              round(sum(t["contribution"] for t in e["tiers"]), 2) == e["risk_score"],
+              " + ".join(str(t["contribution"]) for t in e["tiers"])
+              + f" = {e['risk_score']}")
+    cse01 = next(e for e in ranked if e["entity_id"] == "CSE-01")
+    eg = next(t for t in cse01["tiers"] if t["tier"] == "EXECUTION_GAP")
+    check("CSE-01's Execution Gap tier is the one that capped (215 -> 100)",
+          eg["raw"] == 215 and eg["capped_value"] == 100 and eg["capped"],
+          f"raw={eg['raw']} capped_value={eg['capped_value']}")
+    check("raw total still equals the sum of every finding weight",
+          sum(t["raw"] for t in cse01["tiers"]) == cse01["risk_score_raw"] == 250)
 
     print("\n8. PRD Section 10 step 2 (highest-risk entity shows both finding types)")
     top_types = set(r[0] for r in con.execute(
@@ -270,6 +326,9 @@ def main() -> int:
           con.execute(snapshot).fetchall() == con2.execute(snapshot).fetchall())
     check("scores identical across builds",
           ranked_entities(con) == ranked_entities(con2))
+    check("float scores are bit-identical across builds, not merely close",
+          [e["risk_score"] for e in ranked_entities(con)]
+          == [e["risk_score"] for e in ranked_entities(con2)])
     # 3 EG-001 + 4 EG-002 + 1 EG-003 + 5 EG-004 + 1 EG-005 + 1 NS-001 + 1 NS-002
     # 16 deterministic + 2 ML corroboration
     check("18 findings generated", findings_generated == 18, f"got {findings_generated}")

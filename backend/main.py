@@ -99,6 +99,7 @@ def entity_detail(entity_id: str):
         "risk_score": scores["risk_score"],
         "risk_score_raw": scores["risk_score_raw"],
         "capped": scores["capped"],
+        "tiers": scores["tiers"],
         "findings": [
             {
                 "finding_id": f[0], "rule_id": f[1], "finding_type": f[2],

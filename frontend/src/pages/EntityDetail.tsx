@@ -6,9 +6,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, EntityDetail as Detail, Finding, getEntity } from "../api";
+import { ApiError, EntityDetail as Detail, Finding, TierScore, getEntity } from "../api";
 import { Loading, ErrorState, NotFound, Empty } from "../components/States";
-import { entityRef, findingRef } from "../workpaper";
+import { TIER_LABEL, entityRef, findingRef, formatScore } from "../workpaper";
 
 interface RuleGroup {
   rule_id: string;
@@ -32,6 +32,54 @@ function groupByRule(findings: Finding[]): RuleGroup[] {
     g.instances.push(f);
   }
   return order.map((id) => groups.get(id)!);
+}
+
+/** The score's arithmetic, shown so a reader can foot it themselves.
+
+    PRD Section 5 requires the score to appear as a visible breakdown rather than a
+    bare number. Under the additive formula that was satisfied by listing the finding
+    weights, because they summed to the score. Weighted tiers break that: the weights
+    below no longer add up to the number in the hero. These rows carry the missing
+    arithmetic -- each tier's raw sum, its individual cap, its weight, and the product
+    -- and the products foot to the total. */
+function TierCalc({ tiers, total }: { tiers: TierScore[]; total: number }) {
+  return (
+    <table className="tier-calc">
+      <caption className="sr-only">
+        Weighted-tier score calculation. Each tier is capped at 100 individually, then
+        multiplied by its weight; the products are summed.
+      </caption>
+      <tbody>
+        {tiers.map((t) => (
+          <tr key={t.tier} className={t.raw === 0 ? "tier-calc__row is-empty" : "tier-calc__row"}>
+            <th scope="row" className="tier-calc__name">{TIER_LABEL[t.tier] ?? t.tier}</th>
+            <td className="tier-calc__raw">
+              {t.capped ? (
+                <>
+                  <s>{t.raw}</s>
+                  <span className="sr-only"> capped to </span>
+                  <span className="tier-calc__cap"> {t.capped_value}</span>
+                </>
+              ) : (
+                t.raw
+              )}
+            </td>
+            <td className="tier-calc__op">×</td>
+            <td className="tier-calc__weight">{t.weight.toFixed(2)}</td>
+            <td className="tier-calc__eq">=</td>
+            <td className="tier-calc__contrib">{formatScore(t.contribution)}</td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th scope="row" className="tier-calc__name">Supervisory risk score</th>
+          <td colSpan={4} />
+          <td className="tier-calc__total">{formatScore(total)}</td>
+        </tr>
+      </tfoot>
+    </table>
+  );
 }
 
 function RuleCard({ group, entityId }: { group: RuleGroup; entityId: string }) {
@@ -181,22 +229,24 @@ export default function EntityDetailPage() {
         <div className="total">
           <div className="total__label">Supervisory Risk Score</div>
           <div className="total__value">
-            {entity.capped && (
-              <span className="total__struck">
-                {entity.risk_score_raw}
-                <span className="sr-only"> struck to </span>
-              </span>
-            )}
-            <span>{entity.risk_score}</span>
-            {entity.capped && <span className="total__max">· Maximum</span>}
+            <span>{formatScore(entity.risk_score)}</span>
           </div>
           <div className="total__rule" />
+          {entity.findings.length > 0 && (
+            <TierCalc tiers={entity.tiers} total={entity.risk_score} />
+          )}
           <p className="total__note">
             {entity.capped ? (
               <>
-                Raw total {entity.risk_score_raw} struck to the 100-point cap, which keeps
-                the scale comparable across all entities. Not an error — every
-                contributing weight is listed below.
+                Weighted across three tiers. The{" "}
+                {entity.tiers
+                  .filter((t) => t.capped)
+                  .map((t) => TIER_LABEL[t.tier] ?? t.tier)
+                  .join(" and ")}{" "}
+                tier reached its individual 100-point cap before weighting, so its raw
+                total of {entity.tiers.filter((t) => t.capped).map((t) => t.raw).join(" and ")}{" "}
+                is shown struck above. Not an error — every contributing weight is listed
+                below, and the raw total across all findings is {entity.risk_score_raw}.
               </>
             ) : entity.findings.length === 0 ? (
               <>
@@ -206,7 +256,9 @@ export default function EntityDetailPage() {
             ) : (
               <>
                 Footed from {entity.findings.length}{" "}
-                {entity.findings.length === 1 ? "finding" : "findings"} listed below.
+                {entity.findings.length === 1 ? "finding" : "findings"} listed below,
+                weighted across three tiers. The score is a comparable ranking scale,
+                not a percentage.
               </>
             )}
           </p>

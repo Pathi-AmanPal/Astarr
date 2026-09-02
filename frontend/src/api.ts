@@ -6,6 +6,19 @@ export const API_BASE = "http://localhost:8000";
 export const UNREACHABLE =
   "Cannot reach backend — is it running on localhost:8000?";
 
+/** One tier's line in the weighted-tier score (PRD Section 5 amendment).
+    `raw` is the tier's unweighted weight-sum, `capped_value` is that sum after the
+    tier's individual 100-point cap, and `contribution` is capped_value x weight. The
+    three contributions foot to `risk_score`. */
+export interface TierScore {
+  tier: "EXECUTION_GAP" | "NEGATIVE_SPACE" | "ML_CORROBORATION";
+  raw: number;
+  capped_value: number;
+  capped: boolean;
+  weight: number;
+  contribution: number;
+}
+
 export interface EntitySummary {
   entity_id: string;
   entity_name: string;
@@ -13,6 +26,7 @@ export interface EntitySummary {
   risk_score: number;
   risk_score_raw: number;
   capped: boolean;
+  tiers: TierScore[];
   finding_count: number;
   record_count: number;
 }
@@ -33,6 +47,7 @@ export interface EntityDetail {
   risk_score: number;
   risk_score_raw: number;
   capped: boolean;
+  tiers: TierScore[];
   findings: Finding[];
 }
 

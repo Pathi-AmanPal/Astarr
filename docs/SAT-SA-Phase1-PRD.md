@@ -129,14 +129,29 @@ IF total_count(entity) < (mean_count - 1.5 * std_count):
 
 ---
 
-## 5. Risk Scoring (exact formula for Phase 1)
+## 5. Risk Scoring (exact formula)
+
+> **AMENDMENT 2026-09-02 (Phase 2, Day 1) — the additive formula is superseded by weighted tiers.**
+> The Phase 1 formula is struck below rather than deleted: it is the published Phase 1
+> behaviour, and the record of what changed matters more than a tidy document.
+
+~~`entity_risk_score = MIN(100, SUM(weight of every finding for that entity))`~~
 
 ```
-entity_risk_score = MIN(100, SUM(weight of every finding for that entity))
+EG = MIN(100, SUM(EXECUTION_GAP    weights for that entity))
+NS = MIN(100, SUM(NEGATIVE_SPACE   weights for that entity))
+ML = MIN(100, SUM(ML_CORROBORATION weights for that entity))
+
+entity_risk_score = 0.45 * EG + 0.40 * NS + 0.15 * ML
 ```
 
-- Simple, transparent, additive, capped at 100. No tiered/weighted-percentage formula in Phase 1 (that is a Phase 2 refinement — see Section 9).
-- The entity list and entity detail screens MUST show this as a **visible breakdown** (list of contributing findings and their weights), never just the final number alone. This is non-negotiable — it is the core explainability requirement being demonstrated.
+- Each tier is capped at 100 **individually, before weighting**. Tiers are keyed by `finding_type`, not by rule-id prefix, so a badly named future rule cannot land in the wrong tier.
+- **No outer cap is applied, and none is needed.** The three tier weights sum to exactly `1.00`, so the score is a convex combination of three values each ≤ 100: `0.45(100) + 0.40(100) + 0.15(100) = 100 × 1.00 = 100`. The lower bound is 0 by the same argument. This guarantee rests entirely on the weights summing to 1.0 — an invariant that is invisible in the arithmetic and trivially broken by tuning one coefficient — so `config.py` asserts it at startup and `verify.py` asserts it independently.
+- **The attainable maximum is 86.5, not 100.** `ml_corroboration` emits at most one `ML-001` per entity at weight 10, so the ML tier cannot exceed 10: `0.45(100) + 0.40(100) + 0.15(10) = 86.5`. The score is a **comparable ranking scale, not a percentage** — no UI copy may call it one, and nothing may present 100 as a reachable ceiling.
+- `risk_score` is a **float**, not an int. Tier weighting produces halves and quarters (56.5, 24.75, 13.5); Python's `round()` is banker's rounding, which would send 56.5 to 56 while sending 13.5 to 14 — an inconsistency no one reading the breakdown could explain. Scores are shown to two decimal places throughout.
+- The entity list and entity detail screens MUST show this as a **visible breakdown**, never just the final number alone. This is non-negotiable — it is the core explainability requirement being demonstrated. Under the additive formula the listed finding weights satisfied this by summing to the score; **under weighted tiers they no longer do**, so the detail screen additionally shows the per-tier calculation (raw sum → individual cap → × weight → contribution), footing to the total.
+
+**Ranking consequence, stated deliberately.** The amendment moves exactly one pair: **CSE-03 rises above CSE-02** (3rd and 4th). Both scored 40 under the additive formula and were separated only by the `entity_id` tiebreak. CSE-03's 40 is entirely Execution Gap (`40 × 0.45 = 18.00`); CSE-02's is Negative Space plus ML (`30 × 0.40 + 10 × 0.15 = 13.50`). Their old equality was an artifact of flat addition, and tier weighting separates them on merit. Positions 1, 2 and 5–12 are unchanged, CSE-01 remains strictly highest, and the amendment **removes** the 40-point tie rather than creating any new one. The seven zero-scoring entities still tie, so the `entity_id ASC` tiebreak remains load-bearing.
 
 ---
 
@@ -221,7 +236,7 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 - Peer-cohort grouping for Negative Space (sector/size/criticality-based) — Phase 1 uses the simplified global-average version in Section 4 (NS-001) only
 - Trend analysis, time-series charts, historical comparison across multiple analysis runs
 - Rule/model versioning, analysis-run history
-- Weighted-tier scoring formula (e.g. 35% rules + 30% stats + …) — Phase 1 uses the simple additive-and-cap formula in Section 5 only
+- ~~Weighted-tier scoring formula (e.g. 35% rules + 30% stats + …) — Phase 1 uses the simple additive-and-cap formula in Section 5 only~~ — **implemented in Phase 2, see the Section 5 amendment**
 
 These are documented, planned, and already described in the project's full architecture (see prior deliverables) — they belong to the 36-hour national-round build, not this phase. Do not implement them now even partially; a half-built version of any of these is worse for the live demo than not having it, because it increases surface area for something to break on stage.
 

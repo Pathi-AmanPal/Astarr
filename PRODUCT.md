@@ -170,8 +170,8 @@ EG-001 and EG-002 may both fire on one record; keeping both is intentional.
 
 `ML-001` ML corroboration (10, per entity, only where an EG or NS finding already exists).
 
-Score is `MIN(100, SUM(weights))` — simple, additive, capped. No tiered or
-weighted-percentage formula in Phase 1.
+~~Score is `MIN(100, SUM(weights))` — simple, additive, capped.~~ Superseded by the
+weighted-tier formula; see the Phase 2 amendment below.
 
 Findings are recomputed from scratch on every detection run and are never hand-edited.
 
@@ -309,9 +309,70 @@ in two places is a weight that will eventually disagree with itself.
 `PyYAML>=6.0` joins `backend/requirements.txt` under the same approved-amendment process
 used for `scikit-learn` and `shap`. It installs once and runs offline like everything else.
 
+### Weighted-tier risk scoring (Phase 2 amendment, 2026-09-02)
+
+PRD §5's additive formula is **superseded, not deleted**. It is struck in both documents
+because it is the published Phase 1 behaviour and the record of what changed matters more
+than a tidy document.
+
+```
+EG = MIN(100, SUM(EXECUTION_GAP    weights))
+NS = MIN(100, SUM(NEGATIVE_SPACE   weights))
+ML = MIN(100, SUM(ML_CORROBORATION weights))
+
+risk_score = 0.45*EG + 0.40*NS + 0.15*ML
+```
+
+Each tier is capped at 100 **individually, before weighting**. Tiers key off
+`finding_type`, not rule-id prefix, so a badly named future rule cannot land in the wrong
+tier.
+
+**Why no outer cap is needed.** The three weights sum to exactly 1.00, so the score is a
+convex combination of three values each ≤ 100, and therefore ≤ 100 itself. The guarantee
+depends entirely on that sum, which is invisible in the arithmetic and easy to break by
+tuning one coefficient — so it is asserted at startup in `config.py` and again,
+independently, in `verify.py`. Tier weights live in `rules.yaml` alongside every other
+weight.
+
+**The attainable maximum is 86.5, not 100 — say so, never imply otherwise.** The ML tier
+cannot exceed 10, because `ml_corroboration` emits at most one `ML-001` per entity at
+weight 10. The score is a **comparable ranking scale, not a percentage**. The Phase 1 demo
+line "100, capped from 250" is gone; the equivalent moment is now CSE-01's Execution Gap
+tier capping from 215 to 100 before weighting, which is visible in the tier calculation.
+
+**`risk_score` is a float.** Tier weighting produces halves and quarters, and Python's
+`round()` is banker's rounding — it would send 56.5 to 56 while sending 13.5 to 14. Shown
+to two decimals everywhere, because a workpaper column mixing "18" and "24.75" cannot be
+footed by eye.
+
+**One ranking change, deliberate.** CSE-03 rises above CSE-02 (3rd and 4th). Both scored 40
+additively and were separated only by the `entity_id` tiebreak; CSE-03's 40 is all
+Execution Gap (×0.45 = 18.00) against CSE-02's Negative Space plus ML (×0.40 and ×0.15 =
+13.50). The old equality was an artifact of flat addition. Everything else holds: CSE-01
+strictly first, positions 2 and 5–12 unchanged, and the amendment **removes** the 40-point
+tie rather than creating one. Seven entities still score zero, so the `entity_id ASC`
+tiebreak stays load-bearing.
+
+**Explainability had to be rebuilt, not merely preserved.** §5 requires the score shown as
+a breakdown a reader can foot. Additively, listing finding weights satisfied that because
+they summed to the score. Under weighted tiers **they no longer do** — so the detail screen
+gained a tier calculation (raw → individual cap → × weight → contribution → total). Without
+it the headline number would be unverifiable from anything on screen, which would have
+broken §5 silently while every test still passed.
+
+**UI band thresholds were re-cut, and this is a judgement call worth revisiting.** The
+list's exception/caution/clear bands were 60 and 30 on the additive 0–100 scale; they are
+now 50 and 10. This is not a naive rescale — the old score conflated tiers, so 40 from
+Negative Space and 40 from Execution Gap looked identical. 50/10 is the pair that preserves
+the existing grouping exactly (CSE-01 alone in exception; CSE-05, CSE-03, CSE-02 in
+caution; CSE-06 and the zero-scoring entities clear), so no entity silently changes colour
+as a side effect of the formula change. Chosen to preserve intent, not derived from first
+principles, and kept in two named constants in `EntityList.tsx`.
+
 ### Explicitly out of scope for Phase 1
 
-~~YAML-configurable thresholds~~ (**implemented in Phase 2, see amendment above**), multi-format
+~~YAML-configurable thresholds~~ and ~~the weighted-tier scoring formula~~ (**both
+implemented in Phase 2, see amendments above**), multi-format
 ingestion, any file-upload UI or endpoint accepting user-supplied data, Docker/offline
 image packaging, authentication and roles, peer-cohort grouping for Negative Space, trend
 analysis and time-series charts, rule/model versioning and run history, and the
