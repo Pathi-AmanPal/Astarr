@@ -167,7 +167,7 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 | GET | `/api/findings/{finding_id}/evidence` | Evidence for one finding | `{finding_id, title, explanation, records: [ full record objects ]}` |
 | POST | `/api/demo/reset` | Wipes and re-seeds the fixed demo dataset, re-runs detection | `{"status": "reset_complete", "entities_loaded": N, "findings_generated": M}` |
 
-**Explicitly NOT in Phase 1:** file upload endpoint, any endpoint accepting arbitrary user-supplied data. The dataset is fixed and server-seeded only.
+**Explicitly NOT in Phase 1 — and still not in Phase 2:** file upload endpoint, any endpoint accepting arbitrary user-supplied data. The dataset is fixed and server-seeded only. See the Section 9 decision of 2026-09-02.
 
 ---
 
@@ -243,7 +243,24 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 
 - ~~Isolation Forest / any ML model / SHAP explainability layer~~ — **implemented, see amendment above**
 - ~~YAML-configurable rule thresholds (hardcoded constants in code are fine for Phase 1)~~ — **implemented in Phase 2, see amendment below**
-- Multi-format ingestion (JSON, DB export, API ingestion) or any file upload UI
+- Multi-format ingestion (JSON, DB export, API ingestion) or any file upload UI — **deliberately still excluded in Phase 2, see the decision below**
+
+> **DECISION 2026-09-02 (Phase 2, Day 2) — multi-format ingestion stays designed but not
+> live-exposed.** The ingestion architecture is specified (§3's schema is format-agnostic,
+> and `closure_time_minutes` is already derived at ingestion rather than stored by a
+> source), but **no upload endpoint or upload UI is built**, in Phase 2 either.
+>
+> The reason is the same one that kept it out of Phase 1, and it did not weaken: an upload
+> path accepts **untrusted input**, and untrusted input is the one part of this system that
+> **cannot be covered by the seed-based regression proof** every other feature here rests
+> on. Parsing, encoding, malformed rows, size limits and partial failures form a surface
+> with no fixed dataset to diff against — and a judge operating the tool live will hand it
+> a bad file. The honest position is that the demo build has no code path a visitor can
+> feed arbitrary bytes into.
+>
+> Phase 2's remaining capacity goes to offline/Docker packaging instead, which the problem
+> statement scores directly under deployment requirements. Ingestion remains a documented
+> architectural capability, not a demonstrated one, and must be described that way.
 - Docker / offline image packaging (`uvicorn` + `npm run dev` run locally is sufficient for this phase)
 - Authentication, multi-user roles, permissions
 - Trend analysis, time-series charts, historical comparison across multiple analysis runs

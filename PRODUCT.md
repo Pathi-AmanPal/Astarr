@@ -441,12 +441,46 @@ document:
 trust; `min_cohort_size` below 2 is rejected at startup, because that is the value that
 would silently disable the rule.
 
+### Multi-format ingestion: designed, deliberately not live-exposed (2026-09-02)
+
+**There is no upload endpoint and no upload UI, in Phase 2 either.** This is a decision,
+not an omission, and it needs a prepared one-sentence answer rather than a defensive one.
+
+The ingestion *architecture* is real and documented: the record schema is format-agnostic,
+and `closure_time_minutes` is derived at ingestion rather than trusted from a source, which
+is exactly the seam a JSON / DB-export / API loader plugs into. What does not exist is a
+path a visitor can feed arbitrary bytes into.
+
+**Why it stayed cut when Phase 2 widened the scope.** Every other feature in this build
+rests on a seed-based regression proof — a fixed dataset, a byte-for-byte diff, a claim
+that can be checked. **Untrusted input is the one thing that proof cannot cover.** Parsing,
+encoding, malformed rows, size limits and partial failures are a surface with no fixed
+dataset to compare against, and a judge operating the tool live *will* hand it a bad file.
+Shipping it would mean carrying, on stage, the one capability whose correctness could not
+be demonstrated the way everything else here can.
+
+Phase 2's remaining capacity went to **offline/Docker packaging** instead, which the
+problem statement scores directly under deployment requirements, and which can be verified
+honestly — by actually disconnecting the network.
+
+**If a judge asks where file upload is:**
+
+> *"The ingestion architecture is designed and documented — the schema is format-agnostic
+> and derives its computed fields at load time. We deliberately did not expose a live
+> upload path in the demo build: it is the one component we could not put behind the same
+> regression proof as every rule and score here, so rather than demo something we cannot
+> verify, the operator loads data server-side. The deployment packaging we did build is
+> testable, and we tested it with the network off."*
+
+That is the "claim exactly what is implemented" principle applied to scope, not just to
+wording.
+
 ### Explicitly out of scope for Phase 1
 
 ~~YAML-configurable thresholds~~ and ~~the weighted-tier scoring formula~~ (**both
 implemented in Phase 2, see amendments above**), multi-format
-ingestion, any file-upload UI or endpoint accepting user-supplied data, Docker/offline
-image packaging, authentication and roles, ~~peer-cohort grouping for Negative Space~~
+ingestion, any file-upload UI or endpoint accepting user-supplied data, ~~Docker/offline
+image packaging~~ (**being built in Phase 2**), authentication and roles, ~~peer-cohort grouping for Negative Space~~
 (**infrastructure implemented in Phase 2 behind a validity gate, see amendment above**),
 trend analysis and time-series charts, and rule/model versioning and run history. These are documented and planned, not forgotten — they
 belong to the Phase 2 build.
