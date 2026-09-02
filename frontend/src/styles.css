@@ -1,0 +1,840 @@
+/* SAT-SA — Audit Working Paper.
+   Green-bar analysis paper, not cream. Hairline rules only, no shadow anywhere.
+   The field stays achromatic; severity appears only as an edge mark.
+   No webfonts, no external assets — the app must run with Wi-Fi disabled. */
+
+:root {
+  color-scheme: light;
+
+  --paper: #f4f6f1;
+  --band: #e4ede0;         /* the green bar */
+  --card: #fbfcf9;
+  --rule: #c6d0c2;         /* hairline */
+  --rule-strong: #7e8c7a;
+  --rule-heavy: #3f4a3d;
+
+  --ink: #1d211c;          /* graphite */
+  --ink-soft: #5c665a;
+  --ink-faint: #8b948a;
+
+  --tick: #1f4e79;         /* auditor's blue */
+  --exception: #a32a1c;    /* red exception ink */
+  --caution: #8a5d0b;
+  --clear: #3e6b4b;
+
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas,
+    "Liberation Mono", Menlo, monospace;
+
+  --gutter: 24px;
+  --measure: 1140px;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  /* Analysis paper is ruled. The page carries its own faint horizontal ruling. */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0 27px,
+    rgba(126, 140, 122, 0.07) 27px 28px
+  );
+}
+
+.page {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0 var(--gutter) 72px;
+}
+
+/* ---------- Masthead ---------------------------------------------------- */
+
+.masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 28px 0 12px;
+  border-bottom: 3px double var(--rule-heavy);
+}
+
+.masthead__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.masthead__sub {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
+
+/* ---------- Buttons ----------------------------------------------------- */
+
+.btn {
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--rule-strong);
+  border-radius: 0;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: background 120ms linear, color 120ms linear,
+    border-color 120ms linear;
+}
+
+.btn:hover:not(:disabled) { background: var(--band); border-color: var(--rule-heavy); }
+.btn:disabled { color: var(--ink-faint); cursor: progress; border-color: var(--rule); }
+
+.btn--link {
+  border: 0;
+  background: none;
+  padding: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13.5px;
+  color: var(--tick);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--tick);
+  outline-offset: 2px;
+}
+
+/* ---------- Dataset context strip --------------------------------------- */
+
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 28px;
+  align-items: baseline;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.strip__item { display: flex; gap: 7px; align-items: baseline; }
+
+.strip__n {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+/* ---------- Section headings -------------------------------------------- */
+
+.section-title {
+  margin: 34px 0 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+}
+
+.section-note {
+  margin: 5px 0 14px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  max-width: 62ch;
+}
+
+/* ---------- The schedule (entity list) ---------------------------------- */
+
+.sheet { border: 1px solid var(--rule-strong); background: var(--card); }
+
+.schedule { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+
+.schedule thead th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+
+.schedule td { padding: 0; border-bottom: 1px solid var(--rule); }
+.schedule tbody tr:last-child td { border-bottom: 0; }
+
+/* Green-bar banding: the defining mark of analysis paper. */
+.schedule tbody tr:nth-child(even) { background: var(--band); }
+
+.schedule tbody tr {
+  cursor: pointer;
+  transition: background 110ms linear;
+}
+.schedule tbody tr:hover { background: #dce8d7; }
+
+.cell { display: block; padding: 13px 14px; }
+
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.col-rank { width: 60px; }
+.col-alerts, .col-findings { width: 96px; }
+.col-score { width: 132px; }
+
+.rank {
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+
+/* The entity header sits over the tick gutter, not over the ink. */
+.schedule thead th.col-entity { padding-left: 32px; }
+
+/* The auditor's tick: appears in the margin on hover, as a reviewed mark. */
+.tickmark {
+  display: inline-block;
+  width: 9px;
+  height: 5px;
+  margin-right: 9px;
+  border-left: 2px solid var(--tick);
+  border-bottom: 2px solid var(--tick);
+  transform: rotate(-45deg) scale(0.4);
+  opacity: 0;
+  transition: opacity 120ms linear, transform 120ms ease-out;
+}
+.schedule tbody tr:hover .tickmark,
+.schedule tbody tr:focus-within .tickmark {
+  opacity: 1;
+  transform: rotate(-45deg) scale(1);
+}
+
+.entity-name {
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.schedule tbody tr:hover .entity-name,
+.entity-name:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--tick);
+}
+
+/* Sector: deliberately quiet. It is flavour, never a scoring input. */
+.entity-sector {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.entity-id {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+  color: var(--ink-faint);
+  margin-left: 8px;
+}
+
+/* The score cell carries the only colour in the field, as an edge mark. */
+.score-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 13px 14px 13px 11px;
+  border-left: 3px solid var(--edge, var(--rule));
+}
+
+.score-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.score-max {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.edge-clear     { --edge: var(--clear); }
+.edge-caution   { --edge: var(--caution); }
+.edge-exception { --edge: var(--exception); }
+
+.zero { color: var(--ink-faint); }
+
+/* ---------- Entity detail ------------------------------------------------ */
+
+.crumb {
+  display: inline-block;
+  margin: 22px 0 0;
+  font-size: 13px;
+  color: var(--tick);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 32px;
+  flex-wrap: wrap;
+  padding: 14px 0 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.detail-title { margin: 0; font-size: 26px; letter-spacing: -0.015em; }
+
+.detail-meta {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.detail-meta .entity-id { margin-left: 0; }
+
+/* The footed total: a column sum, ruled beneath the way a schedule is footed. */
+.total { min-width: 232px; }
+
+.total__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.total__value {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1.05;
+}
+
+.total__max {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--exception);
+}
+
+/* Signature motion: the footing rule draws once, left to right. */
+.total__rule {
+  height: 3px;
+  border-top: 1px solid var(--rule-heavy);
+  border-bottom: 1px solid var(--rule-heavy);
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: foot 420ms cubic-bezier(0.22, 0.8, 0.3, 1) 60ms forwards;
+}
+
+@keyframes foot { to { transform: scaleX(1); } }
+
+.total__note {
+  margin: 9px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  max-width: 40ch;
+}
+
+/* ---------- Grouped finding cards ---------------------------------------- */
+
+.findings { display: grid; gap: 12px; margin-top: 14px; }
+
+.rule-card {
+  border: 1px solid var(--rule-strong);
+  background: var(--card);
+}
+
+.rule-card__head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 15px;
+  background: none;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 110ms linear;
+}
+
+.rule-card__head:hover { background: var(--band); }
+
+.rule-card__ref {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.rule-card__title { flex: 1; font-weight: 600; font-size: 15px; }
+
+.rule-card__count {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.rule-card__weight {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 600;
+  min-width: 68px;
+  text-align: right;
+}
+
+.chevron {
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--ink-soft);
+  border-bottom: 1.5px solid var(--ink-soft);
+  transform: rotate(45deg);
+  transition: transform 160ms ease-out;
+  flex: none;
+}
+.rule-card--open .chevron { transform: rotate(-135deg); }
+
+/* Unroll via grid-template-rows rather than max-height: no arbitrary ceiling to
+   clip a long group, and the easing tracks the real content height instead of
+   racing to an invented maximum. */
+.rule-card__body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms ease-out;
+}
+.rule-card__inner { overflow: hidden; min-height: 0; }
+.rule-card--open .rule-card__body { grid-template-rows: 1fr; }
+
+.instance {
+  padding: 13px 15px 13px 18px;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.instance__text { margin: 0; font-size: 13.5px; line-height: 1.55; max-width: 74ch; }
+
+.instance__ref {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.instance__link { flex: none; }
+
+/* ---------- Evidence ------------------------------------------------------ */
+
+.evidence-lead {
+  margin: 16px 0 0;
+  font-size: 17px;
+  line-height: 1.55;
+  max-width: 78ch;
+  padding-left: 14px;
+  border-left: 3px solid var(--rule-strong);
+}
+
+.table-scroll { overflow-x: auto; border: 1px solid var(--rule-strong); background: var(--card); }
+
+.records { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+.records th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+
+.records td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.records tbody tr:nth-child(even) { background: var(--band); }
+.records tbody tr:last-child td { border-bottom: 0; }
+
+.records .notes {
+  white-space: normal;
+  min-width: 190px;
+  max-width: 340px;
+  color: var(--ink-soft);
+}
+
+.flag { color: var(--exception); font-weight: 600; }
+.muted { color: var(--ink-faint); }
+
+.footnote {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--ink-soft);
+  max-width: 76ch;
+}
+
+/* ---------- States -------------------------------------------------------- */
+
+.state {
+  border: 1px solid var(--rule-strong);
+  background: var(--card);
+  padding: 30px 22px;
+  margin-top: 18px;
+  text-align: center;
+}
+
+.state--error { border-color: var(--exception); }
+
+.state__title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.state--error .state__title { color: var(--exception); }
+
+.state__body { margin: 0 auto; max-width: 56ch; font-size: 13.5px; color: var(--ink-soft); }
+.state__actions { margin-top: 16px; }
+
+.banner {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 12px 15px;
+  border: 1px solid var(--exception);
+  border-left-width: 3px;
+  background: var(--card);
+  font-size: 13.5px;
+  color: var(--exception);
+}
+
+.empty {
+  padding: 20px 15px;
+  border: 1px dashed var(--rule-strong);
+  background: transparent;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+
+/* Loading: ruled placeholder lines, drawn the way the sheet itself is ruled. */
+.skeleton { border: 1px solid var(--rule); background: var(--card); }
+
+.skeleton__row {
+  height: 46px;
+  border-bottom: 1px solid var(--rule);
+  background: linear-gradient(
+    to right,
+    transparent 14px,
+    var(--band) 14px 46%,
+    transparent 46%
+  );
+  opacity: 0.75;
+  animation: pulse 1.3s ease-in-out infinite;
+}
+.skeleton__row:nth-child(even) { animation-delay: 0.16s; }
+.skeleton__row:last-child { border-bottom: 0; }
+
+@keyframes pulse { 50% { opacity: 0.4; } }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- Narrow screens ------------------------------------------------ */
+
+@media (max-width: 720px) {
+  :root { --gutter: 14px; }
+  .col-alerts, .col-findings { display: none; }
+  .detail-title { font-size: 21px; }
+  .total__value { font-size: 34px; }
+  .rule-card__head { flex-wrap: wrap; gap: 8px 12px; }
+  .rule-card__title { flex-basis: 100%; order: 3; }
+  .instance { flex-direction: column; gap: 9px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .total__rule { transform: scaleX(1); }
+}
+
+/* ============================================================================
+   The cross-reference system — the direction's own promise, made visible.
+   Every figure carries the reference that resolves to the document proving it.
+   ========================================================================== */
+
+.wp-ref {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+  letter-spacing: 0.06em;
+  color: var(--tick);
+  font-weight: 600;
+}
+
+.wp-ref--lead {
+  border: 1px solid var(--tick);
+  padding: 1px 6px;
+  margin-right: 9px;
+}
+
+.col-ref { width: 82px; }
+
+.schedule .col-ref .wp-ref { display: block; padding: 13px 14px; }
+
+/* ---------- Cover sheet --------------------------------------------------- */
+
+.masthead__ref {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 9px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.masthead__ref span + span::before {
+  content: "·";
+  margin-right: 10px;
+  color: var(--ink-faint);
+}
+
+/* ---------- Ledger summary strip ------------------------------------------ */
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 16px 0 0;
+  border: 1px solid var(--rule-strong);
+  background: var(--card);
+}
+
+.summary__cell {
+  flex: 1 1 140px;
+  padding: 10px 16px;
+  border-left: 1px solid var(--rule);
+}
+.summary__cell:first-child { border-left: 0; }
+
+.summary__label {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.summary__n {
+  margin: 3px 0 0;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+/* ---------- Clean tick: absence of findings is a real, positive result ----- */
+
+.tick-clean {
+  display: inline-block;
+  width: 10px;
+  height: 6px;
+  border-left: 1.5px solid var(--ink-soft);
+  border-bottom: 1.5px solid var(--ink-soft);
+  transform: rotate(-45deg);
+}
+
+/* ---------- Binder index tabs --------------------------------------------- */
+
+.section-title--tabbed { display: flex; align-items: center; gap: 11px; }
+
+.index-tab {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  background: var(--band);
+  border: 1px solid var(--rule-strong);
+  border-left-width: 3px;
+  padding: 3px 8px 3px 7px;
+}
+
+/* ---------- The struck total: an auditor's correction, not an error -------- */
+
+.total__struck {
+  position: relative;
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--ink-faint);
+}
+
+/* Drawn as a rule rather than text-decoration so it reads as a pen stroke. */
+.total__struck::after {
+  content: "";
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  top: 52%;
+  height: 0;
+  border-top: 2px solid var(--exception);
+  transform: rotate(-5deg);
+}
+
+.rule-card__rule {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+}
+
+/* ---------- Auditor's ring: a hand mark, not a web error state ------------- */
+
+.ringed {
+  position: relative;
+  display: inline-block;
+  padding: 0 2px;
+  color: var(--ink);
+}
+
+.ringed::after {
+  content: "";
+  position: absolute;
+  inset: -5px -8px;
+  border: 1.5px solid var(--exception);
+  border-radius: 50%;
+  transform: rotate(-4deg);
+  pointer-events: none;
+}
+
+/* ---------- Verification stamp -------------------------------------------- */
+
+.stamp-row { display: flex; justify-content: flex-end; margin-top: 22px; }
+
+.stamp {
+  display: inline-block;
+  padding: 7px 14px;
+  border: 1.5px solid var(--ink-faint);
+  border-radius: 2px;
+  color: var(--ink-soft);
+  text-align: center;
+  transform: rotate(-1.5deg);
+  opacity: 0.85;
+}
+
+.stamp__main {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.stamp__sub {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+}
+
+@media (max-width: 720px) {
+  .col-ref { width: 62px; }
+  .summary__cell { flex-basis: 100%; border-left: 0; border-top: 1px solid var(--rule); }
+  .summary__cell:first-child { border-top: 0; }
+  .stamp-row { justify-content: flex-start; }
+}
+
+/* ---------- ML corroboration: present, but visibly subordinate --------------- */
+
+.subordinate {
+  margin-top: 8px;
+  padding-left: 18px;
+  border-left: 1px solid var(--rule);
+}
+
+.subordinate .section-title { font-size: 16px; color: var(--ink-soft); }
+
+.subordinate .index-tab {
+  background: transparent;
+  border-style: dashed;
+  border-left-style: solid;
+}
+
+.subordinate .rule-card { border-color: var(--rule); }
+
+.subordinate__note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  max-width: 78ch;
+}

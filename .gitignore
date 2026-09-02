@@ -29,3 +29,15 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# duckdb demo database (regenerated on server start)
+*.duckdb
+
+# frontend build output
+frontend/dist/
+frontend/tsconfig.tsbuildinfo

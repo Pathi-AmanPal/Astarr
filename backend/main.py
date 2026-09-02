@@ -1,0 +1,155 @@
+"""FastAPI app (PRD Section 6). No authentication, no upload endpoints.
+
+The database is seeded automatically on startup when missing or empty, so no manual
+seeding step ever exists (NFR 4).
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+import db
+import models
+from detection import run_detection
+from scoring import entity_scores, ranked_entities
+from seed import seed
+
+RECORD_COLUMNS = [
+    "record_id", "entity_id", "asset_id", "severity", "category", "opened_at",
+    "closed_at", "escalated", "disposition", "investigation_notes", "closure_time_minutes",
+]
+
+
+def _ensure_seeded(con) -> None:
+    if db.is_empty(con):
+        seed(con)
+        run_detection(con)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    con = db.connect()
+    _ensure_seeded(con)
+    app.state.con = con
+    yield
+    con.close()
+
+
+app = FastAPI(title="SAT-SA - Supervisory Analytics", lifespan=lifespan)
+
+# The Vite dev server runs on a different port. Localhost only -- no outbound calls.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:4173", "http://127.0.0.1:4173",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    """Errors always carry an `error` key, per PRD Section 15."""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=detail)
+    return JSONResponse(status_code=exc.status_code, content={"error": str(detail)})
+
+
+@app.get("/api/health", response_model=models.Health)
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/entities", response_model=list[models.EntitySummary])
+def list_entities():
+    return ranked_entities(app.state.con)
+
+
+@app.get("/api/entities/{entity_id}", response_model=models.EntityDetail)
+def entity_detail(entity_id: str):
+    con = app.state.con
+    row = con.execute(
+        "SELECT entity_id, entity_name, sector FROM entities WHERE entity_id = ?",
+        [entity_id],
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "Entity not found"})
+
+    findings = con.execute(
+        """
+        SELECT finding_id, rule_id, finding_type, title, weight, explanation
+        FROM findings WHERE entity_id = ?
+        ORDER BY finding_type, rule_id, finding_id
+        """,
+        [entity_id],
+    ).fetchall()
+
+    scores = entity_scores(con)[entity_id]
+    return {
+        "entity_id": row[0],
+        "entity_name": row[1],
+        "sector": row[2],
+        "risk_score": scores["risk_score"],
+        "risk_score_raw": scores["risk_score_raw"],
+        "capped": scores["capped"],
+        "findings": [
+            {
+                "finding_id": f[0], "rule_id": f[1], "finding_type": f[2],
+                "title": f[3], "weight": f[4], "explanation": f[5],
+            }
+            for f in findings
+        ],
+    }
+
+
+@app.get("/api/findings/{finding_id}/evidence", response_model=models.Evidence)
+def finding_evidence(finding_id: str):
+    con = app.state.con
+    row = con.execute(
+        """
+        SELECT f.finding_id, f.rule_id, f.finding_type, f.title, f.weight, f.explanation,
+               f.evidence_record_ids, f.entity_id, e.entity_name
+        FROM findings f JOIN entities e ON e.entity_id = f.entity_id
+        WHERE f.finding_id = ?
+        """,
+        [finding_id],
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "Finding not found"})
+
+    record_ids = [r for r in row[6].split(",") if r]
+    placeholders = ",".join("?" for _ in record_ids) or "NULL"
+    records = con.execute(
+        f"SELECT {', '.join(RECORD_COLUMNS)} FROM records "
+        f"WHERE record_id IN ({placeholders}) ORDER BY record_id",
+        record_ids,
+    ).fetchall()
+
+    return {
+        "finding_id": row[0], "rule_id": row[1], "finding_type": row[2],
+        "title": row[3], "weight": row[4], "explanation": row[5],
+        "entity_id": row[7], "entity_name": row[8],
+        "records": [dict(zip(RECORD_COLUMNS, r)) for r in records],
+    }
+
+
+@app.post("/api/demo/reset", response_model=models.ResetResult)
+def demo_reset():
+    con = app.state.con
+    try:
+        entities_loaded, _records = seed(con)
+        findings_generated = run_detection(con)
+    except Exception as exc:  # surfaced to the UI as a retry-able banner
+        raise HTTPException(status_code=500, detail={"error": f"Reset failed: {exc}"})
+    return {
+        "status": "reset_complete",
+        "entities_loaded": entities_loaded,
+        "findings_generated": findings_generated,
+    }

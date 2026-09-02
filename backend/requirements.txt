@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+duckdb>=0.10
+pandas>=2.2
+scikit-learn>=1.4
+shap>=0.44
