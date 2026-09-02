@@ -37,6 +37,7 @@ __pycache__/
 
 # duckdb demo database (regenerated on server start)
 *.duckdb
+*.duckdb.wal
 
 # frontend build output
 frontend/dist/
