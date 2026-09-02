@@ -1,96 +1,163 @@
-# Astarr
+# SAT-SA — Supervisory Analytics Tool for SOC Assessment
 
-Hackathon workspace, pre-loaded with a design + motion skill library for AI-assisted
-frontend work. **No application code yet** — that starts after the Figma education
-account is verified.
+A supervisory audit tool that assesses **the quality of a SOC's work**, not the volume
+of it. It reads closed alert records from monitored entities and surfaces two things a
+throughput dashboard cannot:
 
-## What's in here right now
+- **Execution Gaps** — work that was done badly. Critical alerts closed in under two
+  minutes with nobody escalated, serious alerts dismissed with no written justification,
+  identical copy-pasted investigation notes, twenty alerts closed in the same minute.
+- **Negative Space** — work that was never done at all. An entity reporting far fewer
+  alerts than its peers, or reporting nothing in a threat category almost everyone else
+  reports. Absence is evidence, and it is invisible to any tool that only counts what
+  was submitted.
 
-```
-.claude/
-  skills/          26 vendored agent skills (design, motion, image-gen, craft)
-  agents/          4 Impeccable subagents
-  settings.json    pre-approved Bash permissions for the skill scripts
-  settings.impeccable-hooks.json   opt-in design-detector hooks
-.agent/skills/impeccable   symlink Impeccable's scripts expect
-docs/skills/README.md      the skill index — start here
-scripts/install-skills.sh  post-clone setup (+ --global for all projects)
-scripts/install-skills.ps1 the same, for Windows
-scripts/update-skills.sh   re-sync skills from upstream
-skills-manifest.json       source repos + pinned commits + licenses
-```
+Every finding carries the exact records it was derived from. Every risk score decomposes
+into arithmetic a reviewer can foot by hand. Nothing is a black box.
 
-Skills load automatically in Claude Code from `.claude/skills/`. Nothing to install,
-no dependencies, no API keys. Node 22+ is only needed for Impeccable's detector
-scripts.
+Built for the NCIIPC problem statement (Smart India Hackathon 2025).
+
+---
 
 ## Quick start
 
+Two terminals. No API keys, no internet, no cloud services.
+
 ```bash
-git clone https://github.com/Pathi-AmanPal/Astarr.git && cd Astarr
-./scripts/install-skills.sh     # run once after cloning
-claude                          # skills are discovered on launch
+# terminal 1 — backend
+cd backend
+python -m venv venv
+./venv/Scripts/python.exe -m pip install -r requirements.txt   # Windows
+# source venv/bin/activate && pip install -r requirements.txt  # macOS / Linux
+./venv/Scripts/python.exe -m uvicorn main:app --reload
+
+# terminal 2 — frontend
+cd frontend
+npm install
+npm run dev
 ```
 
-Windows (PowerShell):
+Open <http://localhost:5173>. The database seeds itself and every finding is recomputed
+on first start — there is no manual load step.
 
-```powershell
-git clone https://github.com/Pathi-AmanPal/Astarr.git; cd Astarr
-.\scripts\install-skills.ps1
-claude
+For **offline / air-gapped deployment**, see **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+
+---
+
+## Verifying it
+
+The tool is only worth as much as its claims, so the claims are testable:
+
+```bash
+cd backend && ./venv/Scripts/python.exe verify.py
 ```
 
-Type `/` in Claude Code and you should see `impeccable`, `taste-skill`, `animate`
-and the rest. Then, once there's something to design:
+This seeds a throwaway database, runs the full detection pipeline and asserts every
+rule fires **exactly where it was planted and nowhere else** — the score vector, the
+ranking order, the evidence behind each finding, and that two independent builds produce
+identical results. It ends with `All checks passed.` or exits non-zero.
+
+It also **proves the negative** where a guard exists: it disables the peer-cohort
+validity gate and asserts the rule goes silent, demonstrating that the gate is load
+bearing rather than decorative.
+
+Run it after touching any rule, weight or threshold.
+
+> **Findings are not recomputed when rules change.** Startup seeds only when the
+> database is empty, so a running server will keep serving findings from the previous
+> version of a rule — silently. After changing anything, `POST /api/demo/reset` or
+> delete `backend/sat_sa.duckdb`.
+
+---
+
+## How scoring works
+
+Each finding carries a weight. Weights are summed **per tier**, each tier is capped at
+100 **individually**, then combined:
 
 ```
-/impeccable init        # records product truth in PRODUCT.md
+EG = MIN(100, SUM(EXECUTION_GAP    weights))
+NS = MIN(100, SUM(NEGATIVE_SPACE   weights))
+ML = MIN(100, SUM(ML_CORROBORATION weights))
+
+risk_score = 0.45·EG + 0.40·NS + 0.15·ML
 ```
 
-### Why the install step
+No outer cap is applied and none is needed: the three weights sum to exactly 1.00, so
+the result is a convex combination of three values each ≤ 100. That invariant is
+asserted at startup and again, independently, in `verify.py`.
+
+The entity detail screen shows this as a footable table — raw sum → individual cap →
+× weight → contribution → total.
+
+---
+
+## Honest limitations
+
+Stated here because a limitation you can defend is worth more than a claim you cannot:
+
+- **The score's attainable maximum is 86.5, not 100.** The ML tier cannot exceed 10, so
+  a perfect 100 is unreachable. It is a **comparable ranking scale, not a percentage** —
+  do not read "56.50" as "56% risk".
+- **Peer-cohort comparison is gated, and currently inactive.** A cohort is used only
+  when it has ≥ 5 members. The demo dataset has 12 entities across 12 *distinct*
+  sectors, so every cohort has one member and all of them fall back to the global
+  baseline — which each finding says, in words. Cohorting activates by itself as the
+  data grows. A cohort of one has no spread, and a threshold drawn from it would be
+  arithmetic dressed up as evidence.
+- **The ML layer has never been validated or measured for accuracy.** The Isolation
+  Forest is a *corroborating* signal only: it is evaluated exclusively for entities the
+  deterministic rules already flagged, carries the smallest weight in the system, and
+  can never originate a finding.
+- **No file upload, by design.** The ingestion architecture is specified and the schema
+  is format-agnostic, but no endpoint accepts user-supplied data. Untrusted input is the
+  one thing that cannot be covered by the regression proof everything else here rests
+  on. The operator loads data server-side.
+- **The dataset is synthetic.** No real SOC data, no real entity, no customer.
+
+---
+
+## Layout
+
+```
+backend/
+  main.py        FastAPI app + API (also serves the built SPA in the container)
+  detection.py   the seven rules (EG-001..005, NS-001/002)
+  scoring.py     weighted-tier risk scoring
+  ml.py          ML-001 Isolation Forest corroboration, gated
+  rules.yaml     every weight, threshold and condition — no defaults in code
+  config.py      config loader; a missing key raises at startup, never defaults
+  seed.py        the synthetic dataset, with each rule's trigger deliberately planted
+  verify.py      the regression suite
+frontend/src/    React + Vite: entity list, entity detail, evidence view
+docs/            PRD and the skill index
+DEPLOYMENT.md    offline/air-gapped deployment and its operational hazards
+PRODUCT.md       product record, including every amendment made during the build
+```
+
+---
+
+## Design skill library
+
+This repo also carries a vendored design + motion skill library for Claude Code (26
+skills, 4 agents), used while building the frontend. It is independent of the
+application.
+
+```bash
+./scripts/install-skills.sh          # run once after cloning
+./scripts/install-skills.sh --global # or install into ~/.claude for every project
+```
 
 Impeccable's scripts resolve through `.agent/skills/impeccable`, a symlink to
-`.claude/skills/impeccable`. Git for Windows checks symlinks out as plain text files
-unless `core.symlinks` is enabled, which breaks every Impeccable command. The install
-script detects that and recreates the link (a directory junction on Windows — no admin
-rights needed). On macOS and Linux it's a no-op that confirms the link is intact.
+`.claude/skills/impeccable`. Git for Windows checks symlinks out as plain files unless
+`core.symlinks` is enabled, which breaks every Impeccable command; the install script
+detects that and repairs the link. It verifies the link's *target*, not just that
+something exists there — a link pointing at the wrong place, or a directory copy left
+behind by a fallback, is repaired rather than reported as fine.
 
-### Using the skills in other projects
-
-```bash
-./scripts/install-skills.sh --global      # macOS / Linux / Git Bash
-.\scripts\install-skills.ps1 -Global      # Windows
-```
-
-Copies all 26 skills and the 4 agents into `~/.claude/`, so they load in every project,
-and pre-approves Impeccable's script calls in `~/.claude/settings.json` so it doesn't
-prompt on each run. Existing skills of the same name are left alone unless you pass
-`--force` / `-Force`.
-
-A global install changes where the skills *live*, not where they *work* — Impeccable
-still reads the code of, and writes `PRODUCT.md` / `DESIGN.md` into, whatever project
-you run it in.
-
-See **[docs/skills/README.md](docs/skills/README.md)** for every skill, what it does,
-and which to reach for.
-
-## When the project starts
-
-The stack is deliberately unchosen — nothing here pins you to a framework. Add the app
-at the root (or under `apps/`) and the skills apply to it as-is. Two files Impeccable
-will create and then keep reading, both meant to be edited by hand:
-
-- `PRODUCT.md` — audience, purpose, constraints, voice. Durable.
-- `DESIGN.md` — the visual world: type, color, spacing, motion. Per project.
-
-## Editing the skills
-
-They're plain Markdown in `.claude/skills/` — open one and change it. Upstream re-syncs
-overwrite local edits, so diff first if you've customized anything:
-
-```bash
-./scripts/update-skills.sh --latest
-```
+See **[docs/skills/README.md](docs/skills/README.md)** for the full index, and
+`./scripts/update-skills.sh --latest` to re-sync from upstream (this overwrites local
+edits — diff first).
 
 ## Licenses
 
