@@ -202,8 +202,19 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 > `backend/requirements.txt` as an approved amendment to §11's dependency lock. Every other
 > item in this section remains deferred. See PRODUCT.md for the full record.
 
+> **AMENDMENT 2026-09-02 (Phase 2, Day 1) — YAML-configurable rule thresholds are no longer
+> deferred.** Every rule weight, severity list, disposition list and numeric threshold now
+> lives in `backend/rules.yaml`, loaded once at import by `backend/config.py`. This was a
+> **pure refactor**: the YAML transcribes the Phase 1 constants exactly, and the proof is
+> that `verify.py` produces byte-identical output before and after, and the full findings
+> table (all 18 findings, weights, explanations and evidence ids) is byte-identical too.
+> The loader has **no default values** — a missing or malformed key raises `ConfigError` at
+> startup rather than letting a rule run against a silently substituted threshold.
+> `PyYAML>=6.0` is added to `backend/requirements.txt` under the same §11 amendment process
+> used for `scikit-learn`/`shap`.
+
 - ~~Isolation Forest / any ML model / SHAP explainability layer~~ — **implemented, see amendment above**
-- YAML-configurable rule thresholds (hardcoded constants in code are fine for Phase 1)
+- ~~YAML-configurable rule thresholds (hardcoded constants in code are fine for Phase 1)~~ — **implemented in Phase 2, see amendment below**
 - Multi-format ingestion (JSON, DB export, API ingestion) or any file upload UI
 - Docker / offline image packaging (`uvicorn` + `npm run dev` run locally is sufficient for this phase)
 - Authentication, multi-user roles, permissions

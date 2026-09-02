@@ -5,3 +5,4 @@ duckdb>=0.10
 pandas>=2.2
 scikit-learn>=1.4
 shap>=0.44
+PyYAML>=6.0

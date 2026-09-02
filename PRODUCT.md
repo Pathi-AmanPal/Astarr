@@ -161,7 +161,8 @@ the ordering is the point, and the build is what makes it true rather than a sli
 
 ### Detection and scoring, fixed
 
-Four rules, thresholds hardcoded: `EG-001` rapid closure without escalation (weight 35,
+Four rules, thresholds now read from `backend/rules.yaml` (see the Phase 2 amendment
+below; they were hardcoded through Phase 1): `EG-001` rapid closure without escalation (weight 35,
 per record), `EG-002` critical alert without escalation (25, per record), `EG-003`
 repetitive/template investigation notes (20, per entity, ≥3 records sharing notes),
 `NS-001` below-average alert volume (30, per entity, below `mean − 1.5 × stddev`).
@@ -281,9 +282,36 @@ cannot fire alone. The demo framing must stay: rules and statistics are primary 
 deterministic; Isolation Forest is a small secondary signal. The build makes that claim
 demonstrably true rather than merely asserted.
 
+### YAML-configurable rule thresholds (Phase 2 amendment, 2026-09-02)
+
+PRD §9 deferred YAML configuration to Phase 2. That deferral is now **discharged**. Every
+rule weight, severity list, disposition list and numeric threshold lives in
+`backend/rules.yaml` and is read once at import time by `backend/config.py`.
+
+**This was a pure refactor, and the regression proof is the point of it.** The YAML
+transcribes the Phase 1 constants byte for byte, and two independent checks confirm nothing
+moved: `verify.py` output is character-identical before and after, and a full dump of the
+findings table — all 18 findings with their weights, titles, explanations and evidence
+record ids, plus the ranked entity list — is byte-identical between the pre-refactor and
+post-refactor code paths. Externalising configuration is exactly the kind of change that
+looks safe and quietly shifts a threshold; this is the evidence that it did not.
+
+**The loader has no default values, on purpose.** A missing, malformed or absent key raises
+`ConfigError` at startup. A detection rule that silently falls back to a plausible-looking
+threshold is worse than one that refuses to start: the demo would run, the numbers would be
+wrong, and nothing on stage would say so. `rules.yaml` is resolved relative to `config.py`,
+not the process working directory, so `python verify.py`, `uvicorn main:app` from the repo
+root, and an import from a test directory all read the same file.
+
+`ML-001`'s weight moved into the same file rather than staying in `ml.py`. A weight defined
+in two places is a weight that will eventually disagree with itself.
+
+`PyYAML>=6.0` joins `backend/requirements.txt` under the same approved-amendment process
+used for `scikit-learn` and `shap`. It installs once and runs offline like everything else.
+
 ### Explicitly out of scope for Phase 1
 
-YAML-configurable thresholds, multi-format
+~~YAML-configurable thresholds~~ (**implemented in Phase 2, see amendment above**), multi-format
 ingestion, any file-upload UI or endpoint accepting user-supplied data, Docker/offline
 image packaging, authentication and roles, peer-cohort grouping for Negative Space, trend
 analysis and time-series charts, rule/model versioning and run history, and the

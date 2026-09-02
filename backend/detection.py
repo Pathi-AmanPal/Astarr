@@ -1,7 +1,9 @@
 """Detection rules (PRD Section 4, expanded to six rules 2026-09-02).
 
-Thresholds are hardcoded constants by design -- PRD Section 9 defers YAML configuration
-to Phase 2. Findings are recomputed from scratch on every run and never hand-edited.
+Thresholds are no longer hardcoded: PRD Section 9 deferred YAML configuration to
+Phase 2, and `rules.yaml` (via `config.py`) is that deferral discharged. Every value
+below is read from that file at import time; none of them has a fallback default.
+Findings are recomputed from scratch on every run and never hand-edited.
 
 Determinism: every rule iterates entities and records in sorted order, and finding ids
 are assigned in a fixed rule sequence, so the same seed always produces byte-identical
@@ -13,39 +15,48 @@ from __future__ import annotations
 import math
 import statistics
 
-from ml import ML_RULE_ID, ML_WEIGHT, ml_corroboration
+import config
+from ml import ML_RULE_ID, ml_corroboration
 
 EXECUTION_GAP = "EXECUTION_GAP"
 NEGATIVE_SPACE = "NEGATIVE_SPACE"
 
-# --- Rule thresholds -------------------------------------------------------------
-EG001_MAX_CLOSURE_MINUTES = 2
-EG003_MIN_DUPLICATES = 3
-EG005_MIN_BURST_SIZE = 5
-NS001_STDDEV_MULTIPLIER = 1.5
-NS002_MIN_RECORDS = 10          # below this, a coverage gap is just low volume
+# --- Rule thresholds (from rules.yaml, resolved once at import) -------------------
+# These module-level names are kept deliberately: they are the rules' vocabulary, and
+# verify.py imports two of them. What changed is where the numbers come from, not what
+# any of them means.
+EG001_SEVERITIES = config.severities("EG-001")
+EG001_MAX_CLOSURE_MINUTES = config.param("EG-001", "max_closure_minutes")
+EG001_REQUIRE_UNESCALATED = config.param("EG-001", "require_unescalated")
+
+EG002_SEVERITIES = config.severities("EG-002")
+EG002_REQUIRE_UNESCALATED = config.param("EG-002", "require_unescalated")
+
+EG003_MIN_DUPLICATES = config.param("EG-003", "min_duplicates")
+
+EG004_SEVERITIES = config.severities("EG-004")
+EG004_DISPOSITIONS = config.dispositions("EG-004")
+EG004_REQUIRE_EMPTY_NOTES = config.param("EG-004", "require_empty_notes")
+
+EG005_MIN_BURST_SIZE = config.param("EG-005", "min_burst_size")
+
+NS001_STDDEV_MULTIPLIER = config.param("NS-001", "stddev_multiplier")
+
+NS002_MIN_RECORDS = config.param("NS-002", "min_records")
 
 # A category is "expected" when at least this fraction of entities report it.
 # Proportional, never absolute: the rule previously hardcoded 6, which was 75% of 8.
 # Left absolute, that same 6 silently becomes a 50% bar at 12 entities and a 25% bar
 # at 24 -- the rule weakening as the dataset grows, with nothing to catch it.
-NS002_MIN_REPORTING_FRACTION = 0.75
+NS002_MIN_REPORTING_FRACTION = config.param("NS-002", "min_reporting_fraction")
 
 
 def ns002_min_reporting(entity_count: int) -> int:
     """Entities that must report a category before absence counts as a blind spot."""
     return math.ceil(NS002_MIN_REPORTING_FRACTION * entity_count)
 
-WEIGHTS = {
-    "EG-001": 35,
-    "EG-002": 25,
-    "EG-003": 20,
-    "EG-004": 15,
-    "EG-005": 25,
-    "NS-001": 30,
-    "NS-002": 25,
-    ML_RULE_ID: ML_WEIGHT,
-}
+
+WEIGHTS = config.WEIGHTS
 
 
 def _fetch_records(con) -> list[dict]:
@@ -78,10 +89,10 @@ def eg001(records: list[dict]) -> list[dict]:
     out = []
     for r in records:
         if (
-            r["severity"] in ("HIGH", "CRITICAL")
+            r["severity"] in EG001_SEVERITIES
             and r["closure_time_minutes"] is not None
             and r["closure_time_minutes"] < EG001_MAX_CLOSURE_MINUTES
-            and not r["escalated"]
+            and not (EG001_REQUIRE_UNESCALATED and r["escalated"])
         ):
             out.append({
                 "entity_id": r["entity_id"],
@@ -102,7 +113,9 @@ def eg001(records: list[dict]) -> list[dict]:
 def eg002(records: list[dict]) -> list[dict]:
     out = []
     for r in records:
-        if r["severity"] == "CRITICAL" and not r["escalated"]:
+        if r["severity"] in EG002_SEVERITIES and not (
+            EG002_REQUIRE_UNESCALATED and r["escalated"]
+        ):
             out.append({
                 "entity_id": r["entity_id"],
                 "rule_id": "EG-002",
@@ -154,9 +167,9 @@ def eg004(records: list[dict]) -> list[dict]:
     for r in records:
         notes = r["investigation_notes"]
         if (
-            r["severity"] in ("HIGH", "CRITICAL")
-            and r["disposition"] in ("FALSE_POSITIVE", "BENIGN")
-            and (notes is None or not notes.strip())
+            r["severity"] in EG004_SEVERITIES
+            and r["disposition"] in EG004_DISPOSITIONS
+            and not (EG004_REQUIRE_EMPTY_NOTES and notes is not None and notes.strip())
         ):
             out.append({
                 "entity_id": r["entity_id"],

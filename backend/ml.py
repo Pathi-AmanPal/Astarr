@@ -23,9 +23,14 @@ from __future__ import annotations
 
 import warnings
 
+import config
+
 ML_RULE_ID = "ML-001"
 ML_FINDING_TYPE = "ML_CORROBORATION"
-ML_WEIGHT = 10
+# Read from rules.yaml alongside every other rule weight. Kept here as a name because
+# that is where the layer's vocabulary lives, but there is only one source of truth:
+# a weight defined in two files is a weight that will eventually disagree with itself.
+ML_WEIGHT = config.WEIGHTS[ML_RULE_ID]
 ML_TITLE = "Statistically unusual profile (ML corroboration)"
 
 RANDOM_STATE = 42

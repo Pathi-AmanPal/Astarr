@@ -1,0 +1,62 @@
+# Detection rule configuration (PRD Section 9, Phase 2 amendment 2026-09-02).
+#
+# Phase 1 hardcoded every threshold in detection.py and deferred YAML configuration to
+# Phase 2. This file is that deferral discharged. The values below are a byte-for-byte
+# transcription of the Phase 1 constants -- externalising them changed no behaviour,
+# and verify.py is the proof.
+#
+# Loaded ONCE at import time by config.py. There are no defaults: a missing or
+# malformed key raises at startup rather than silently reverting a threshold to
+# something plausible. A rule that cannot be configured correctly must not run at all.
+
+weights:
+  EG-001: 35
+  EG-002: 25
+  EG-003: 20
+  EG-004: 15
+  EG-005: 25
+  NS-001: 30
+  NS-002: 25
+  ML-001: 10          # smallest in the system by design: corroboration never dominates
+
+rules:
+  # --- Execution Gap -------------------------------------------------------------
+  EG-001:
+    # Serious alert closed implausibly fast with nobody escalated.
+    severities: [HIGH, CRITICAL]
+    max_closure_minutes: 2
+    require_unescalated: true
+
+  EG-002:
+    # CRITICAL with no escalation, regardless of closure speed.
+    severities: [CRITICAL]
+    require_unescalated: true
+
+  EG-003:
+    # Identical investigation notes repeated within one entity.
+    min_duplicates: 3
+
+  EG-004:
+    # Serious alert dismissed with no written justification.
+    severities: [HIGH, CRITICAL]
+    dispositions: [FALSE_POSITIVE, BENIGN]
+    require_empty_notes: true
+
+  EG-005:
+    # Alerts closed en masse inside a single minute.
+    min_burst_size: 5
+
+  # --- Negative Space ------------------------------------------------------------
+  NS-001:
+    # Alert volume below mean - k * population sigma.
+    # Population stddev, not sample: PRD Section 12. DuckDB's STDDEV() is stddev_samp,
+    # which is an easy and silent mismatch to introduce here.
+    stddev_multiplier: 1.5
+
+  NS-002:
+    # A category absent from an entity that most of its peers report.
+    # Proportional, never absolute. Phase 1 originally hardcoded 6, which was 75% of 8
+    # entities; left absolute, that same 6 becomes a 50% bar at 12 entities and 25% at
+    # 24 -- the rule quietly weakening as the dataset grows, with nothing to catch it.
+    min_reporting_fraction: 0.75
+    min_records: 10     # below this, a coverage gap is just low volume
