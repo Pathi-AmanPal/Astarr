@@ -24,18 +24,50 @@ for arg in "$@"; do
 done
 
 # ---------------------------------------------------------------- repo repair
+# The link must match what is committed, byte for byte: git tracks the symlink's
+# TARGET TEXT as the blob, so an absolute target that resolves perfectly still shows
+# up as a permanent modification in `git status` and would commit a machine-specific
+# path if anyone staged it.
 link="$ROOT/.agent/skills/impeccable"
+want="../../.claude/skills/impeccable"
 mkdir -p "$ROOT/.agent/skills"
-if [ -L "$link" ] && [ -d "$link" ]; then
+
+# Two failure modes this deliberately does NOT treat as success:
+#   1. A symlink that resolves but points somewhere else (e.g. an absolute path).
+#      `[ -L ] && [ -d ]` is true for it, which is why the old check passed it.
+#   2. `ln -s` on a Git-Bash/MSYS checkout without symlink privileges, which silently
+#      COPIES the directory and exits 0. `[ -d ]` is true for the copy, so the old
+#      check reported "relinked" for 163 duplicated files that then drift out of sync
+#      with .claude/skills/impeccable, with nothing to catch it.
+if [ -L "$link" ] && [ -d "$link" ] && [ "$(readlink "$link")" = "$want" ]; then
   echo "ok   .agent/skills/impeccable -> $(readlink "$link")"
 else
-  rm -rf "$link"
-  if ln -s ../../.claude/skills/impeccable "$link" 2>/dev/null && [ -d "$link" ]; then
-    echo "fix  .agent/skills/impeccable relinked"
+  if [ -L "$link" ]; then
+    current="$(readlink "$link" 2>/dev/null || true)"
+    [ -n "$current" ] && echo "     replacing link -> $current"
+    rm -f "$link"            # a link: remove the link, never follow into the target
+  elif [ -e "$link" ]; then
+    echo "     replacing a real directory/file (not a link)"
+    rm -rf "$link"
+  fi
+
+  # nativestrict makes ln -s FAIL loudly rather than fall back to copying, so the
+  # copy path below is reached deliberately instead of masquerading as a link.
+  MSYS="${MSYS:-}${MSYS:+ }winsymlinks:nativestrict" \
+    ln -s "$want" "$link" 2>/dev/null || true
+
+  if [ -L "$link" ] && [ -d "$link" ] && [ "$(readlink "$link")" = "$want" ]; then
+    echo "fix  .agent/skills/impeccable relinked -> $want"
   else
+    # Not a usable link. Clear whatever landed there before copying, so a partial
+    # or wrong-target link is never left behind next to the copy.
+    if [ -L "$link" ]; then rm -f "$link"; elif [ -e "$link" ]; then rm -rf "$link"; fi
     cp -R "$ROOT/.claude/skills/impeccable" "$link"
-    echo "warn .agent/skills/impeccable copied (symlinks unavailable here)"
-    echo "     re-run this script after 'git config core.symlinks true' to get a real link"
+    echo "warn .agent/skills/impeccable COPIED, not linked (symlinks unavailable here)"
+    echo "     the copy will drift from .claude/skills/impeccable and git will show"
+    echo "     the tracked symlink as deleted. To get a real link: enable Windows"
+    echo "     Developer Mode (or run elevated), 'git config core.symlinks true',"
+    echo "     then re-run this script."
   fi
 fi
 
