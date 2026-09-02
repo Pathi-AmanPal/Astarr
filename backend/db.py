@@ -7,7 +7,14 @@ import os
 import duckdb
 
 DB_FILENAME = "sat_sa.duckdb"
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), DB_FILENAME)
+
+# Beside the source by default, which is what local development wants. The container
+# overrides it to a writable volume: the image runs as a non-root user with /app owned
+# read-only in practice, and the database is rebuilt from the seed on startup anyway,
+# so it is state, not content, and does not belong inside the image.
+DB_PATH = os.environ.get("SATSA_DB") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), DB_FILENAME
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entities (

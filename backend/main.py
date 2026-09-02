@@ -6,11 +6,13 @@ seeding step ever exists (NFR 4).
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 import db
 import models
@@ -154,3 +156,38 @@ def demo_reset():
         "entities_loaded": entities_loaded,
         "findings_generated": findings_generated,
     }
+
+
+# --- Static frontend (container builds only) -------------------------------------
+# In the packaged image the built frontend is copied to /app/static and served by this
+# same process, so the offline deployment is ONE container on ONE port -- one tar file
+# to carry to an air-gapped machine, with no reverse proxy to misconfigure.
+#
+# Mounted LAST, on purpose. The catch-all below would shadow every /api route if it
+# were registered first, and the failure would look like a 404 on a working endpoint.
+#
+# During local development this directory does not exist, uvicorn and the Vite dev
+# server run separately on their own ports, and none of this code is reached -- which
+# is why the CORS middleware above stays.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+if os.path.isdir(STATIC_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")),
+              name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        """Serve the SPA shell for any non-API path.
+
+        React Router owns client-side routing, so a deep link like /entity/CSE-01 is a
+        real URL a judge can reload or land on directly. Without this it would 404 --
+        the server has no such route, only the bundle does.
+        """
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail={"error": "Not found"})
+        candidate = os.path.normpath(os.path.join(STATIC_DIR, full_path))
+        # Containment check: never let a crafted path escape the static root.
+        if (full_path and os.path.isfile(candidate)
+                and os.path.commonpath([candidate, STATIC_DIR]) == STATIC_DIR):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
