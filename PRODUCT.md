@@ -177,7 +177,10 @@ weighted-tier formula; see the Phase 2 amendment below.
 
 Findings are recomputed from scratch on every detection run and are never hand-edited.
 
-**Expansion to six rules (confirmed 2026-09-02).** Three rules added, each inheriting the
+**Expansion to ~~six~~ seven detection rules (confirmed 2026-09-02; count corrected
+2026-09-03).** Three rules added to the four the PRD specifies, giving seven deterministic
+rules — eight findings sources counting `ML-001`, which is corroboration rather than a
+detection rule. Each new rule inherits the
 same discipline — deterministic, explicitly planted in the seed, and programmatically
 verified to fire before being relied on:
 
@@ -196,6 +199,16 @@ verified to fire before being relied on:
 every per-entity total in PRD §12 holds exactly. NS-001's `mean − 1.5σ` is computed from
 those counts, so holding them fixed leaves the Negative Space demo mathematically
 untouched by any rule addition.
+
+**Dataset expansion to 12 entities / 248 records (confirmed 2026-09-02, recorded here
+2026-09-03).** Four clean entities were appended — `CSE-09` Entity India (Aviation, 22),
+`CSE-10` Entity Juliet (Oil & Gas, 24), `CSE-11` Entity Kilo (Municipal Services, 21),
+`CSE-12` Entity Lima (Space Research, 23). Appended **after** `CSE-08` on purpose, so every
+existing record keeps its id (`ALT-0001`..`ALT-0158`) and every existing assertion holds
+unchanged. They add no findings: their job is to thicken the peer group for NS-001's
+baseline and the Isolation Forest's feature space. The margin check in the standing rule
+below is what was run to confirm the expansion was safe in both directions, and PRD §12
+carries the matching amendment.
 
 **NS-002 threshold is proportional, not absolute (deliberate choice, confirmed
 2026-09-02).** A category counts as "expected" when at least **75% of entities** report it,
@@ -502,11 +515,15 @@ belong to the Phase 2 build.
 - **The PRD itself** — [`docs/SAT-SA-Phase1-PRD.md`](docs/SAT-SA-Phase1-PRD.md), locked
   scope, the authority for Phase 1. Where it conflicts with general best practice, it
   wins.
-- **A fully specified synthetic dataset** (PRD §12): 8 entities, 158 records, with the
-  demo findings planted by construction. `CSE-01` (25 records) carries EG-001, EG-002, and
-  EG-003 and must end up highest-risk — the primary demo entity. `CSE-02` (4 records) is
-  the Negative Space entity. `CSE-05` (23 records) carries a single EG-002 to show a
-  second, lower-weight profile. The remaining five are clean filler.
+- **A fully specified synthetic dataset** (PRD §12): ~~8 entities, 158 records~~
+  **12 entities, 248 records**, with the demo findings planted by construction. `CSE-01`
+  (25 records) carries ~~EG-001, EG-002, and EG-003~~ **EG-001 ×3, EG-002 ×3, EG-003,
+  EG-004, NS-002 and ML-001** and must end up highest-risk — the primary demo entity, at
+  56.50 under weighted tiers. `CSE-02` (4 records) is the Negative Space entity **(NS-001,
+  ML-001)**. `CSE-05` (23 records) carries ~~a single EG-002~~ **EG-002 and EG-004 ×2** to
+  show a second, lower-weight profile. **`CSE-03` carries EG-004 and EG-005; `CSE-06`
+  carries EG-004.** The remaining ~~five~~ **seven** are clean filler and score zero —
+  `CSE-04`, and `CSE-07` through `CSE-12`. 18 findings in total.
 
 ### What does not exist, and must not be fabricated
 
