@@ -53,7 +53,7 @@ Use **DuckDB**, single local file (`sat_sa.duckdb`), created and seeded automati
 |---|---|---|
 | `entity_id` | TEXT, PK | e.g. `"CSE-01"` |
 | `entity_name` | TEXT | display name, e.g. `"Entity Alpha Power Grid"` |
-| `sector` | TEXT | flavor text only, not used in logic |
+| `sector` | TEXT | ~~flavor text only, not used in logic~~ **Superseded (Phase 2 Day 2): `sector` is load-bearing.** It is `NS-001`'s cohort key (`cohort_by: sector` in `rules.yaml`) and is displayed as a secondary label on the entity list and detail screens. |
 
 ### 3.3 Table: `findings` (computed by the detection layer, not part of raw seed data)
 
@@ -61,8 +61,8 @@ Use **DuckDB**, single local file (`sat_sa.duckdb`), created and seeded automati
 |---|---|---|
 | `finding_id` | TEXT, PK | e.g. `"F-0001"` |
 | `entity_id` | TEXT | FK |
-| `rule_id` | TEXT | one of `EG-001`, `EG-002`, `EG-003`, `NS-001` |
-| `finding_type` | TEXT | `EXECUTION_GAP` or `NEGATIVE_SPACE` |
+| `rule_id` | TEXT | ~~one of `EG-001`, `EG-002`, `EG-003`, `NS-001`~~ **Superseded (Phase 2):** one of `EG-001`, `EG-002`, `EG-003`, `EG-004`, `EG-005`, `NS-001`, `NS-002`, `ML-001` — eight rules. |
+| `finding_type` | TEXT | ~~`EXECUTION_GAP` or `NEGATIVE_SPACE`~~ **Superseded (Phase 2):** `EXECUTION_GAP`, `NEGATIVE_SPACE`, or `ML_CORROBORATION`. `finding_type`, not the rule-id prefix, is what the scoring tiers key on. |
 | `weight` | INTEGER | see Section 4 for exact values |
 | `title` | TEXT | short human title, e.g. `"Rapid closure without escalation"` |
 | `explanation` | TEXT | full plain-language sentence, templated per rule (see 4) |
@@ -73,6 +73,15 @@ Findings are **recomputed from scratch** every time the detection pipeline runs 
 ---
 
 ## 4. Detection Rules (exact specification — implement precisely as written)
+
+> **AMENDMENT 2026-09-03 (Phase 2, closing pass) — this section specifies four of the
+> eight rules that ship.** `EG-004` (dismissed without recorded justification, weight 15),
+> `EG-005` (bulk closure burst, weight 25) and `NS-002` (threat-category blind spot, weight
+> 25) were added on 2026-09-02; `ML-001` (weight 10) arrived under the Isolation Forest
+> amendment in §9. Their exact specifications, thresholds and the reasoning behind each are
+> recorded in **PRODUCT.md**, and every threshold they use lives in `backend/rules.yaml`.
+> The four rules below are unchanged except where struck. `verify.py` asserts all eight fire
+> exactly where they are planted and nowhere else.
 
 ### EG-001 — Rapid Closure Without Escalation
 **Fires per matching record.**
@@ -122,7 +131,7 @@ IF total_count(entity) < (mean_count - 1.5 * std_count):
     flag entity
 ```
 - `weight = 30`
-- `title = "Alert volume significantly below dataset average"`
+- ~~`title = "Alert volume significantly below dataset average"`~~ **Superseded (Phase 2 Day 2):** `title = "Alert volume significantly below peer baseline"` — the rule now compares against a peer cohort where one is statistically valid, so the title can no longer name the global average as the only baseline.
 - `explanation` template: `"This entity generated {total_count} alerts, compared to a dataset average of {mean_count} — well below expectation for a comparable environment."`
 - `evidence_record_ids` = all record_ids for that entity (so the evidence view can show "here is everything this entity submitted — notice how little there is").
 - ~~**Explicitly note in the UI** (small footer text on the finding's evidence view) that this is a simplified global-average comparison, and the full version (peer-cohort grouping by sector/size/criticality) is planned for the next phase. Do not claim peer-cohort comparison anywhere in Phase 1 UI copy.~~ **Superseded by the Phase 2 Day 2 amendment:** the rule now performs peer-cohort comparison where a cohort is statistically valid (≥ 5 members) and falls back to the global baseline otherwise. The finding's own `explanation` names which baseline was used and why, so the UI no longer needs separate footer copy to stay honest — but it must still never claim a peer comparison that did not happen.
@@ -167,24 +176,41 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 | GET | `/api/findings/{finding_id}/evidence` | Evidence for one finding | `{finding_id, title, explanation, records: [ full record objects ]}` |
 | POST | `/api/demo/reset` | Wipes and re-seeds the fixed demo dataset, re-runs detection | `{"status": "reset_complete", "entities_loaded": N, "findings_generated": M}` |
 
+> **AMENDMENT 2026-09-03 (Phase 2, closing pass) — the two entity response shapes above
+> are narrower than what ships.** Both additionally carry `sector`; `/api/entities` carries
+> `record_count` (needed by the list's alert-count column) and `/api/entities/{entity_id}`
+> carries `risk_score_raw`, `capped` and a `tiers` array (raw sum, capped value, weight and
+> contribution per tier) — all required by the §5 weighted-tier amendment, which cannot be
+> shown as a footable breakdown without them. Every addition is additive; no field was
+> removed or renamed, so the shapes above remain accurate as a subset.
+
 **Explicitly NOT in Phase 1 — and still not in Phase 2:** file upload endpoint, any endpoint accepting arbitrary user-supplied data. The dataset is fixed and server-seeded only. See the Section 9 decision of 2026-09-02.
 
 ---
 
 ## 7. Frontend Specification
 
-**Stack:** React + Vite + TypeScript. Minimal styling (plain CSS or a lightweight utility approach) — visual polish is secondary to reliability in Phase 1. No charting library required.
+**Stack:** React + Vite + TypeScript. Minimal styling (plain CSS or a lightweight utility approach) — ~~visual polish is secondary to reliability in Phase 1~~. No charting library required.
+
+> **AMENDMENT 2026-09-03 (Phase 2, closing pass) — the frontend is held to a
+> production-quality bar, not a minimal one.** Shortlisting turns substantially on look and
+> feel, assessed by non-technical judges, so craft is a scored property of the deliverable.
+> The §11 dependency lock is untouched: all of it is hand-written plain CSS — no package, no
+> design system, no webfont, nothing fetched at runtime. See PRODUCT.md, "Frontend quality
+> bar". Reliability, determinism and offline operation are not traded away for it, and
+> §10's acceptance run is unaffected.
+
 
 ### Screen 1 — Entity Risk List (`/`)
-- Table columns: Rank, Entity Name, Risk Score (colored badge — green if `<30`, amber if `30–60`, red if `>60`), Finding Count.
+- ~~Table columns: Rank, Entity Name, Risk Score (colored badge — green if `<30`, amber if `30–60`, red if `>60`), Finding Count.~~ **Superseded (Phase 2):** working-paper reference, Rank, Entity (name over sector), Alerts, Findings, Risk Score. Severity is carried by an **edge mark** on the row rather than a filled badge — the field stays achromatic. The bands moved to `>50` exception / `>=10` caution / below that clear, because the weighted-tier formula rescaled the numbers; 50/10 is the pair that preserves the Phase 1 three-band grouping exactly, so no entity silently changes colour as a side effect of the formula change.
 - Sorted descending by risk score (server already returns it sorted; do not re-sort client-side in a way that could diverge).
 - Each row is clickable → navigates to Screen 2 for that entity.
 - Top-right: **"Reset Demo Data"** button → calls `POST /api/demo/reset`, then refetches the list. Must show a loading state while resetting and MUST NOT leave the page in a broken state if the call is slow.
 
 ### Screen 2 — Entity Detail (`/entities/:id`)
 - Header: entity name + large risk score display.
-- Two sections, clearly separated: **"Execution Gap Findings"** and **"Negative Space Findings"** (filter the entity's `findings` array by `finding_type` client-side).
-- Each finding shown as a card: `title`, `weight`, a **"View Evidence"** button.
+- ~~Two sections~~ **three sections (Phase 2)**, clearly separated: **"Execution Gap Findings"**, **"Negative Space Findings"** and **"ML Corroboration"** (filter the entity's `findings` array by `finding_type` client-side). The third renders visibly subordinate, and only when an `ML-001` finding exists.
+- ~~Each finding shown as a card: `title`, `weight`, a **"View Evidence"** button.~~ **Superseded (Phase 2):** findings group by `rule_id` — one card per rule showing count and summed weight, collapsed by default, expanding to the individual instances, each keeping its own evidence link. §5's requirement is that a score is never shown without its breakdown, not that every finding occupies its own card: every contributing weight stays visible and every record stays reachable. The header additionally shows the per-tier calculation footing to the total.
 - If a section has zero findings, show a plain "No findings of this type" message — never an empty blank area.
 
 ### Screen 3 — Evidence View (route `/findings/:id`, or a modal — either is acceptable)
@@ -202,7 +228,7 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 
 1. **MUST** run with zero outbound network calls at runtime. Verify explicitly by disabling Wi-Fi and re-running the full demo script (Section 10) before 15 Sept.
 2. **MUST NOT** crash or dead-end on any click within the three defined screens.
-3. API responses **MUST** return in under 1 second on the fixed demo dataset (target size: 6–8 entities, ~150–200 records total — trivial at this scale, stated here as an explicit acceptance bar).
+3. API responses **MUST** return in under 1 second on the fixed demo dataset (~~target size: 6–8 entities, ~150–200 records total~~ **as shipped: 12 entities, 248 records** — still trivial at this scale; the bar itself is unchanged).
 4. The demo dataset **MUST** load automatically on first server start with no manual steps beyond starting the backend and frontend.
 5. Detection **MUST** be deterministic — running `/api/demo/reset` repeatedly must always produce identical entities, findings, and scores from the same seed data.
 
@@ -261,7 +287,7 @@ Backend: **FastAPI**, served locally (e.g. `http://localhost:8000`). All respons
 > Phase 2's remaining capacity goes to offline/Docker packaging instead, which the problem
 > statement scores directly under deployment requirements. Ingestion remains a documented
 > architectural capability, not a demonstrated one, and must be described that way.
-- Docker / offline image packaging (`uvicorn` + `npm run dev` run locally is sufficient for this phase)
+- ~~Docker / offline image packaging (`uvicorn` + `npm run dev` run locally is sufficient for this phase)~~ — **implemented in Phase 2 as the offline submission artifact; see [DEPLOYMENT.md](../DEPLOYMENT.md).** The live demo still runs on the dev servers exactly as this phase specified; the container is a separate deliverable and does not replace them.
 - Authentication, multi-user roles, permissions
 - Trend analysis, time-series charts, historical comparison across multiple analysis runs
 - Rule/model versioning, analysis-run history
@@ -297,13 +323,39 @@ If any step fails on any of the three consecutive runs, the build is **not done*
 | Frontend | React, Vite, TypeScript |
 | Styling | Plain CSS or minimal utility classes — no design system dependency |
 | Charts | None required in Phase 1 |
-| Packaging | None — run directly via `uvicorn` and `npm run dev` / `vite preview` |
+| Packaging | ~~None~~ — the **demo** still runs directly via `uvicorn` and `npm run dev`; a Docker image was added in Phase 2 as the offline deployment artifact (see §9 and DEPLOYMENT.md) |
 
 Do not substitute or add libraries beyond this list without explicit instruction.
 
 ---
 
 ## 12. Exact Demo Dataset Specification (implements Section 3)
+
+> **AMENDMENT 2026-09-03 (Phase 2, closing pass) — the dataset is 12 entities and 248
+> records, not 8 and 158.** Four clean entities were appended on 2026-09-02 — `CSE-09` Entity
+> India (Aviation, 22), `CSE-10` Entity Juliet (Oil & Gas, 24), `CSE-11` Entity Kilo
+> (Municipal Services, 21), `CSE-12` Entity Lima (Space Research, 23). The expansion is
+> **purely additive**: they are appended *after* `CSE-08`, so every existing record keeps its
+> id (`ALT-0001`..`ALT-0158`), every per-entity total in the table below still holds exactly,
+> and every existing assertion survives. Their job is to thicken the peer group for NS-001's
+> baseline and the Isolation Forest's feature space, not to add findings — all four are clean
+> by construction.
+>
+> Inside the original eight, the `EG-004`, `EG-005` and `NS-002` triggers were planted by
+> **replacing filler slots within their own entity**, never by adding records — which is what
+> keeps the counts below exact. `NS-002` is planted on `CSE-01` (it files no `Phishing`
+> alert) because §10 step 2 requires the highest-risk entity to show both an Execution Gap
+> *and* a Negative Space finding, and `CSE-01` had none of the latter; fixed in the seed
+> rather than by amending the locked §10.
+>
+> **As shipped, findings land on:** `CSE-01` (EG-001 ×3, EG-002 ×3, EG-003, EG-004, NS-002,
+> ML-001 — highest risk at 56.50), `CSE-02` (NS-001, ML-001), `CSE-03` (EG-004, EG-005),
+> `CSE-05` (EG-002, EG-004 ×2), `CSE-06` (EG-004). Seven entities — `CSE-04` and `CSE-07`
+> through `CSE-12` — are legitimately clean and score zero. 18 findings in total.
+>
+> The mandated verification below still applies and still passes; it is computed across all
+> **12** entities, and `verify.py` additionally asserts the margin in *both* directions —
+> that `CSE-02` stays below the threshold, and that no clean entity has fallen below it.
 
 The seed data **MUST** be generated by a deterministic script (no `random`/RNG calls) so the dataset — and therefore every finding and score — is byte-identical on every run. Use simple index-based loops for timestamps and filler content, not randomness.
 
@@ -406,7 +458,7 @@ pandas>=2.2
 - `GET /api/findings/{finding_id}/evidence` with an unknown `finding_id` → HTTP 404, same pattern.
 - `POST /api/demo/reset` failing for any reason → HTTP 500 with a JSON error message; frontend must show a retry-able inline error banner on the list page, not a crash.
 - Backend unreachable (server not started, wrong port) → every frontend page must show a clear "Cannot reach backend — is it running on localhost:8000?" message instead of an unhandled fetch exception.
-- Empty findings list for an entity (should not happen for the 8 seeded entities, but must be handled defensively) → show "No findings of this type" text, per Section 7, Screen 2.
+- Empty findings list for an entity (~~should not happen for the 8 seeded entities, but must be handled defensively~~ **as shipped this is a normal case, not a defensive one: seven of the 12 entities legitimately have no findings**) → show "No findings of this type" text, per Section 7, Screen 2. A clean entity is a positive supervisory result and is presented as one, never as an empty error state.
 
 ---
 
@@ -417,4 +469,4 @@ pandas>=2.2
 - Entity detail page score label: **"Supervisory Risk Score"**
 - Reset button label: **"Reset Demo Data"**
 
-No further branding, logos, or theming required for Phase 1 — functional clarity over visual polish.
+No further branding or logos required. ~~Functional clarity over visual polish.~~ **Superseded by the §7 quality-bar amendment above:** the four copy strings here remain verbatim and binding, but the interface around them is held to a production bar, not a minimal one.
