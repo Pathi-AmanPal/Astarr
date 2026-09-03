@@ -1,0 +1,47 @@
+# deps
+node_modules/
+.pnp
+.pnp.js
+
+# build output
+dist/
+build/
+out/
+.next/
+.turbo/
+.vercel/
+.output/
+
+# env
+.env
+.env.*
+!.env.example
+
+# local agent state
+.claude/settings.local.json
+.impeccable/
+.agent/state/
+
+# editor / os
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# duckdb demo database (regenerated on server start)
+*.duckdb
+*.duckdb.wal
+
+# frontend build output
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# offline deployment artifact (docker save output; ~239 MB, not source)
+*.tar

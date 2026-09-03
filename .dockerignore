@@ -1,0 +1,25 @@
+# Everything the image must never contain. Two of these are correctness issues, not
+# just size: a baked sat_sa.duckdb would ship a stale database (it is rebuilt on
+# startup), and a copied host venv would carry Windows binaries into a Linux image.
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+**/*.duckdb
+
+.git/
+.github/
+.claude/
+.agent/
+.impeccable/
+docs/
+scripts/
+*.md
+!backend/*.md
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

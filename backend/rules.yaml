@@ -1,0 +1,101 @@
+# Detection rule configuration (PRD Section 9, Phase 2 amendment 2026-09-02).
+#
+# Phase 1 hardcoded every threshold in detection.py and deferred YAML configuration to
+# Phase 2. This file is that deferral discharged. The values below are a byte-for-byte
+# transcription of the Phase 1 constants -- externalising them changed no behaviour,
+# and verify.py is the proof.
+#
+# Loaded ONCE at import time by config.py. There are no defaults: a missing or
+# malformed key raises at startup rather than silently reverting a threshold to
+# something plausible. A rule that cannot be configured correctly must not run at all.
+
+# --- Risk scoring (PRD Section 5, Phase 2 amendment) ------------------------------
+# Weighted-tier formula. Each tier's raw weight-sum is capped INDIVIDUALLY at
+# `tier_cap` before weighting; because the three tier weights sum to exactly 1.0, the
+# result is a convex combination of three values that are each <= tier_cap, so it can
+# never exceed tier_cap. That is what removes the need for an outer MIN(100, ...).
+#
+# The sum-to-1.0 invariant is load-bearing and invisible: raise one weight without
+# lowering another and the <= 100 guarantee silently breaks. config.py asserts it at
+# startup rather than trusting whoever edits this block next.
+#
+# Tiers are keyed by finding_type, not by rule-id prefix -- finding_type is what is
+# actually stored on each finding, so a new rule cannot land in the wrong tier by
+# being named badly.
+scoring:
+  tier_cap: 100
+  tier_weights:
+    EXECUTION_GAP: 0.45
+    NEGATIVE_SPACE: 0.40
+    ML_CORROBORATION: 0.15
+
+weights:
+  EG-001: 35
+  EG-002: 25
+  EG-003: 20
+  EG-004: 15
+  EG-005: 25
+  NS-001: 30
+  NS-002: 25
+  ML-001: 10          # smallest in the system by design: corroboration never dominates
+
+rules:
+  # --- Execution Gap -------------------------------------------------------------
+  EG-001:
+    # Serious alert closed implausibly fast with nobody escalated.
+    severities: [HIGH, CRITICAL]
+    max_closure_minutes: 2
+    require_unescalated: true
+
+  EG-002:
+    # CRITICAL with no escalation, regardless of closure speed.
+    severities: [CRITICAL]
+    require_unescalated: true
+
+  EG-003:
+    # Identical investigation notes repeated within one entity.
+    min_duplicates: 3
+
+  EG-004:
+    # Serious alert dismissed with no written justification.
+    severities: [HIGH, CRITICAL]
+    dispositions: [FALSE_POSITIVE, BENIGN]
+    require_empty_notes: true
+
+  EG-005:
+    # Alerts closed en masse inside a single minute.
+    min_burst_size: 5
+
+  # --- Negative Space ------------------------------------------------------------
+  NS-001:
+    # Alert volume below mean - k * population sigma.
+    # Population stddev, not sample: PRD Section 12. DuckDB's STDDEV() is stddev_samp,
+    # which is an easy and silent mismatch to introduce here.
+    stddev_multiplier: 1.5
+
+    # Peer-cohort baseline (PRD Section 9 deferral, Phase 2 Day 2).
+    # An entity is compared against its own cohort ONLY where that cohort is large
+    # enough for a mean and sigma to mean anything; otherwise it falls back to the
+    # global baseline. The fallback is not a failure mode, it is the rule refusing to
+    # make a claim the data cannot support.
+    #
+    # At 12 entities across 12 DISTINCT sectors every cohort holds exactly one member,
+    # so nothing qualifies today and every entity uses the global baseline -- which is
+    # precisely the Phase 1 behaviour, unchanged. Cohorting activates on its own as
+    # soon as sectors genuinely repeat. No code change required.
+    #
+    # Why 5: at n=1 sigma is 0 and the test "count < mean - 1.5*0" reduces to
+    # "count < count", which is never true -- the rule would silently stop firing
+    # altogether. At n=2 the two members sit exactly 1 sigma either side of their own
+    # mean by construction, so the threshold is arithmetic, not evidence. 5 is the
+    # smallest cohort where a 1.5-sigma statement is defensible in front of an auditor.
+    cohort_by: sector
+    min_cohort_size: 5
+
+  NS-002:
+    # A category absent from an entity that most of its peers report.
+    # Proportional, never absolute. Phase 1 originally hardcoded 6, which was 75% of 8
+    # entities; left absolute, that same 6 becomes a 50% bar at 12 entities and 25% at
+    # 24 -- the rule quietly weakening as the dataset grows, with nothing to catch it.
+    min_reporting_fraction: 0.75
+    min_records: 10     # below this, a coverage gap is just low volume
