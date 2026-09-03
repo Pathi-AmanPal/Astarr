@@ -19,9 +19,9 @@ Built for the NCIIPC problem statement (Smart India Hackathon 2025).
 
 ---
 
-## Quick start
+## Setup
 
-Two terminals. No API keys, no internet, no cloud services.
+First time on a machine. Two terminals. No API keys, no internet, no cloud services.
 
 ```bash
 # terminal 1 — backend
@@ -29,18 +29,61 @@ cd backend
 python -m venv venv
 ./venv/Scripts/python.exe -m pip install -r requirements.txt   # Windows
 # source venv/bin/activate && pip install -r requirements.txt  # macOS / Linux
-./venv/Scripts/python.exe -m uvicorn main:app --reload
 
 # terminal 2 — frontend
 cd frontend
 npm install
-npm run dev
 ```
 
-Open <http://localhost:5173>. The database seeds itself and every finding is recomputed
-on first start — there is no manual load step.
+Requires **Python 3.11+** and **Node 18+**. Both installs need network access once;
+nothing after this point does.
 
-For **offline / air-gapped deployment**, see **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+## Running the demo
+
+Once the dependencies above are installed, this is the whole thing — two commands, two
+terminals, exactly as used for the acceptance run:
+
+```bash
+# terminal 1 — backend on :8000
+cd backend && ./venv/Scripts/python.exe -m uvicorn main:app --reload
+
+# terminal 2 — frontend on :5173
+cd frontend && npm run dev
+```
+
+Then open **<http://localhost:5173>**.
+
+The database seeds itself and every finding is recomputed on first start — there is no
+manual load step. On macOS/Linux the backend line is
+`cd backend && ./venv/bin/python -m uvicorn main:app --reload`.
+
+The live demo runs on these dev servers, **not** on the container below. Both default to
+port 8000, so do not run them at the same time.
+
+## Running the offline container
+
+The container is the air-gapped **deployment artifact**, built and verified separately
+from the demo. The frontend is compiled into the image and served by the same FastAPI
+process, so there is one port and nothing is fetched at runtime.
+
+```bash
+# on a machine with network, once
+docker build -t sat-sa:offline .
+docker save sat-sa:offline -o sat-sa-offline.tar     # ~239 MB — this is the deliverable
+
+# on the air-gapped machine
+docker load -i sat-sa-offline.tar
+docker run -d --name satsa -p 8000:8000 -v satsa-data:/data sat-sa:offline
+```
+
+Then open **<http://localhost:8000>** — the container serves both the app and the API
+there. **Publish it on port 8000 specifically:** the frontend resolves the API at
+`http://localhost:8000` by name (`frontend/src/api.ts`), so on any other host port the
+page loads and the data never arrives.
+
+**[DEPLOYMENT.md](DEPLOYMENT.md)** covers the rest: how the zero-egress claim was actually
+tested, the DuckDB single-writer hazard, and why a container reusing an old volume can
+silently serve findings from a previous version of a rule.
 
 ---
 
@@ -110,9 +153,16 @@ Stated here because a limitation you can defend is worth more than a claim you c
   deterministic rules already flagged, carries the smallest weight in the system, and
   can never originate a finding.
 - **No file upload, by design.** The ingestion architecture is specified and the schema
-  is format-agnostic, but no endpoint accepts user-supplied data. Untrusted input is the
-  one thing that cannot be covered by the regression proof everything else here rests
-  on. The operator loads data server-side.
+  is format-agnostic — `closure_time_minutes` is derived at ingestion rather than trusted
+  from a source, which is exactly the seam a JSON / DB-export / API loader plugs into.
+  What does not exist is a path a visitor can feed arbitrary bytes into. Untrusted input
+  is the one part of this system that **cannot be covered by the seed-based regression
+  proof** every other feature here rests on: parsing, encodings, malformed rows, size
+  limits and partial failures form a surface with no fixed dataset to diff against.
+  Shipping it would mean carrying the one capability whose correctness could not be
+  demonstrated the way everything else here can. That capacity went to offline packaging
+  instead, which is testable — and was tested with the network off. The operator loads
+  data server-side. Recorded in full in [PRODUCT.md](PRODUCT.md) and PRD §9.
 - **The dataset is synthetic.** No real SOC data, no real entity, no customer.
 
 ---
@@ -131,8 +181,10 @@ backend/
   verify.py      the regression suite
 frontend/src/    React + Vite: entity list, entity detail, evidence view
 docs/            PRD and the skill index
+Dockerfile       the offline image; frontend is built in and served by FastAPI
 DEPLOYMENT.md    offline/air-gapped deployment and its operational hazards
 PRODUCT.md       product record, including every amendment made during the build
+DESIGN.md        the visual system — tokens, type, layout, components
 ```
 
 ---
