@@ -42,3 +42,6 @@ __pycache__/
 # frontend build output
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+
+# offline deployment artifact (docker save output; ~239 MB, not source)
+*.tar
