@@ -188,7 +188,14 @@ export default function EntityList() {
                   </td>
                   <td className="col-score">
                     <span className={`score-cell ${edgeClass(e.risk_score)}`}>
-                      <span className="score-value">{formatScore(e.risk_score)}</span>
+                      {/* A zero score is graphite-faint, per DESIGN.md. Without this the
+                          eight clean entities render at full ink and a schedule whose
+                          result is "one exception" reads as a wall of heavy zeros. */}
+                      <span
+                        className={`score-value${e.risk_score === 0 ? " zero" : ""}`}
+                      >
+                        {formatScore(e.risk_score)}
+                      </span>
                       {/* NOT "Maximum": under weighted tiers a capped tier does not
                           mean a maximum score. CSE-01 caps its Execution Gap tier at
                           100 and still scores 56.50, and labelling that "Maximum" on

@@ -226,8 +226,16 @@ export default function EntityDetailPage() {
           </p>
         </div>
 
-        <div className="total">
-          <div className="total__label">Supervisory Risk Score</div>
+      </div>
+
+      {/* DESIGN.md: "a document body on the left and a score block on the right, so the
+          total and its per-tier calculation sit beside the findings that produce them."
+          The rail is first in the DOM so that on a narrow screen the score is read
+          before the findings; grid places it right on desktop. */}
+      <div className="detail-body">
+        <aside className="detail-body__rail">
+          <div className="total">
+            <div className="total__label">Supervisory Risk Score</div>
           <div className="total__value">
             <span>{formatScore(entity.risk_score)}</span>
           </div>
@@ -261,37 +269,41 @@ export default function EntityDetailPage() {
                 not a percentage.
               </>
             )}
-          </p>
-        </div>
-      </div>
+            </p>
+          </div>
+        </aside>
 
-      <Section
-        title="Execution Gap Findings"
-        tab="EG"
-        groups={gaps}
-        entityId={entity.entity_id}
-      />
-      <Section
-        title="Negative Space Findings"
-        tab="NS"
-        groups={spaces}
-        entityId={entity.entity_id}
-      />
-      {corroboration.length > 0 && (
-        <div className="subordinate">
+        <div className="detail-body__main">
           <Section
-            title="ML Corroboration"
-            tab="ML"
-            groups={corroboration}
+            title="Execution Gap Findings"
+            tab="EG"
+            groups={gaps}
             entityId={entity.entity_id}
           />
-          <p className="subordinate__note">
-            Supporting signal only. An unsupervised Isolation Forest is evaluated solely
-            for entities the deterministic rules already flagged, so it can never raise a
-            finding on its own. It carries the smallest weight in the system.
-          </p>
+          <Section
+            title="Negative Space Findings"
+            tab="NS"
+            groups={spaces}
+            entityId={entity.entity_id}
+          />
+          {corroboration.length > 0 && (
+            <div className="subordinate">
+              <Section
+                title="ML Corroboration"
+                tab="ML"
+                groups={corroboration}
+                entityId={entity.entity_id}
+              />
+              <p className="subordinate__note">
+                Supporting signal only. An unsupervised Isolation Forest is evaluated
+                solely for entities the deterministic rules already flagged, so it can
+                never raise a finding on its own. It carries the smallest weight in the
+                system.
+              </p>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </>
   );
 }

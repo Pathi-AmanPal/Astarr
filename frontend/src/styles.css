@@ -296,10 +296,13 @@ body {
   text-underline-offset: 3px;
 }
 
+/* Align to the top, not the bottom. The score block is tall; bottom-aligning the
+   title against it pushed the entity name into the vertical middle of the page and
+   opened ~400px of dead paper above it. A sheet is read from its head down. */
 .detail-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 32px;
   flex-wrap: wrap;
   padding: 14px 0 18px;
@@ -317,6 +320,27 @@ body {
 .detail-meta .entity-id { margin-left: 0; }
 
 /* The footed total: a column sum, ruled beneath the way a schedule is footed. */
+/* The document body: findings on the left, the score block railed alongside them.
+   The rail is first in the DOM (score before findings on a narrow screen) and placed
+   into column 2 here. It sticks so the total stays readable against the findings that
+   produce it, which is what the head-band layout could not do. */
+.detail-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 288px;
+  column-gap: 44px;
+  align-items: start;
+}
+
+.detail-body__main { grid-column: 1; grid-row: 1; min-width: 0; }
+
+.detail-body__rail {
+  grid-column: 2;
+  grid-row: 1;
+  position: sticky;
+  top: 22px;
+  padding-top: 34px; /* aligns the score label with the first section heading */
+}
+
 .total { min-width: 232px; }
 
 .total__label {
@@ -609,6 +633,17 @@ body {
   .rule-card__head { flex-wrap: wrap; gap: 8px 12px; }
   .rule-card__title { flex-basis: 100%; order: 3; }
   .instance { flex-direction: column; gap: 9px; }
+
+  /* One column: the score is read first, then the findings under it. The rail
+     stops sticking — a sticky block on a short viewport eats the reading area. */
+  .detail-body { grid-template-columns: minmax(0, 1fr); }
+  .detail-body__rail {
+    grid-column: 1;
+    grid-row: 1;
+    position: static;
+    padding-top: 0;
+  }
+  .detail-body__main { grid-column: 1; grid-row: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {
