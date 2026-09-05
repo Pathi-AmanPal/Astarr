@@ -352,6 +352,47 @@ Closes the evidence sheet, bottom-right: "VERIFIED AGAINST SOURCE RECORDS" over 
 working-paper reference and record count, in a 1.5px graphite-faint box at 2px radius,
 rotated -1.5° at 85% opacity.
 
+### Corroboration profile (added 2026-09-05)
+
+A four-row table inside the ML block, one row per model feature: the entity's figure, the
+peer-group mean it was judged against, its deviation in population sigmas, the attribution
+the ranking used, and a plotted mark.
+
+It exists because the finding's prose names two drivers and stops. "Driven by share of
+high/critical alerts" is a claim; `0.56 against a peer mean of 0.34, +2.98σ` is the
+working. The deterministic rules have always resolved to their source records, and this is
+the same promise kept by the one layer that could not previously honour it.
+
+The plot is a **mark, not a fill**: a 1px centre rule for the peer mean, and a 3px bar to
+one side of it whose length is the deviation, scaled to the largest on that entity with a
+1.5-sigma floor so unremarkable spreads are not magnified. The bar is graphite except on
+the two features the attribution leaned on hardest, which take exception ink and a 3px
+left edge on the row — the same red pen that circles a triggering value in an evidence
+table, and the same edge-mark language the schedule uses. The field stays achromatic.
+
+The attribution column is not decoration: without it a row marked at +0.82σ sits above an
+unmarked row at +0.72σ and the marking reads as arbitrary. The column shows the number the
+ranking actually used.
+
+It renders for entities the model did **not** flag, too, captioned "this entity sits inside
+the normal profile". A supervisory tool that only shows its reasoning when it accuses is
+showing an argument, not a method.
+
+### Dataset provenance and upload (added 2026-09-05)
+
+The masthead reference line carries the dataset the schedule was computed over — "Synthetic
+demo dataset", or `Source: <filename>` after an upload. A screenshot of findings with no
+dataset attribution is not evidence of anything.
+
+Two buttons, both the existing quiet utility variant: "Load CSV" and "Reset Demo Data".
+Loading data is preparation, not the point of the page, so neither is styled as a call to
+action.
+
+A rejected upload uses the exception banner **stacked** rather than inline: a heading in
+exception ink, a monospace list of line-numbered problems, and a hairline-separated note
+giving the expected columns and a template link. The schedule stays on screen behind it —
+the previous dataset is still loaded, and the banner must not imply otherwise.
+
 ### Binder index tabs
 
 Section headings ("Execution Gap Findings") carry a mono tab — `EG`, `NS`, `ML` — filled
@@ -418,4 +459,6 @@ for the chevron, 240ms ease-out for a card unrolling. A global
 - **Don't** let the ML Corroboration section reach visual parity with the two detection
   sections. It sits below them, indented behind a rule, with a dashed tab, a smaller
   heading and a standing caveat — the subordination is a product truth expressed
-  visually, not a layout preference.
+  visually, not a layout preference. **(Amended 2026-09-05: the section now also carries
+  the corroboration profile — see Components. Every device that expresses subordination
+  is unchanged; what the block gained is depth, not prominence.)**

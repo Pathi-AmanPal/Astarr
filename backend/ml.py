@@ -125,21 +125,26 @@ def _phrase(feature_index: int, entity_value: float, dataset_mean: float) -> str
     return f"{label} ({_fmt(entity_value)} vs a dataset average of {_fmt(dataset_mean)}, {direction} average)"
 
 
-def ml_corroboration(con, flagged_entity_ids: set[str]) -> list[dict]:
-    """ML-001 findings, only for entities the deterministic engine already flagged.
+def analyse(con) -> dict | None:
+    """Fit the forest once and return everything derived from it.
 
-    `flagged_entity_ids` is the gate: it carries the entities that already have an
-    EG or NS finding. An empty set produces no findings at all.
+    Split out so the finding and the persisted profile are computed from the SAME fit
+    rather than from two independent ones. Two fits would be identical today (the
+    random_state is fixed), but a profile that could drift from the finding it explains
+    is a defect waiting for the first person who changes a hyperparameter.
+
+    Returns None when the layer cannot run at all -- too few entities, or scikit-learn
+    absent. Corroboration is optional by design; detection must survive its absence.
     """
     entity_ids, matrix = build_features(con)
     if len(matrix) < 2:
-        return []
+        return None
 
     try:
         from sklearn.ensemble import IsolationForest
     except ImportError:
         # The layer is corroboration only; its absence must never break detection.
-        return []
+        return None
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -152,6 +157,73 @@ def ml_corroboration(con, flagged_entity_ids: set[str]) -> list[dict]:
 
     contributions, method = _attributions(model, matrix)
     means = [_mean([r[c] for r in matrix]) for c in range(len(FEATURES))]
+    deviations = [_zscores(matrix, i) for i in range(len(matrix))]
+
+    return {
+        "entity_ids": entity_ids,
+        "matrix": matrix,
+        "predictions": list(predictions),
+        "contributions": contributions,
+        "deviations": deviations,
+        "means": means,
+        "method": method,
+    }
+
+
+def profile_rows(analysis: dict | None, flagged_entity_ids: set[str]) -> list[tuple]:
+    """One row per entity per feature, for `ml_profile`.
+
+    Emitted for every entity including the clean ones. The anomaly claim is a claim
+    about a peer group, so the peer group has to be on the record too -- otherwise the
+    UI can show what the model concluded but not what it concluded it from.
+    """
+    if analysis is None:
+        return []
+
+    rows: list[tuple] = []
+    for i, entity_id in enumerate(analysis["entity_ids"]):
+        # bool(), not the numpy scalar: sklearn returns numpy.bool_ from the comparison
+        # and DuckDB refuses to bind it. float() below is the same defence for the
+        # feature values, which arrive as numpy floats when SHAP supplied them.
+        anomalous = bool(analysis["predictions"][i] == -1)
+        for c, (key, label) in enumerate(FEATURES):
+            rows.append((
+                entity_id,
+                key,
+                label,
+                float(analysis["matrix"][i][c]),
+                float(analysis["means"][c]),
+                float(analysis["deviations"][i][c]),
+                float(analysis["contributions"][i][c]),
+                analysis["method"],
+                anomalous,
+                bool(anomalous and entity_id in flagged_entity_ids),
+            ))
+    return rows
+
+
+def ml_corroboration(
+    con, flagged_entity_ids: set[str], analysis: dict | None = None
+) -> list[dict]:
+    """ML-001 findings, only for entities the deterministic engine already flagged.
+
+    `flagged_entity_ids` is the gate: it carries the entities that already have an
+    EG or NS finding. An empty set produces no findings at all.
+
+    `analysis` lets a caller that already fitted the forest reuse it; omitted, the fit
+    happens here, which is what keeps existing callers working unchanged.
+    """
+    if analysis is None:
+        analysis = analyse(con)
+    if analysis is None:
+        return []
+
+    entity_ids = analysis["entity_ids"]
+    matrix = analysis["matrix"]
+    predictions = analysis["predictions"]
+    contributions = analysis["contributions"]
+    means = analysis["means"]
+    method = analysis["method"]
 
     out: list[dict] = []
     for i, entity_id in enumerate(entity_ids):

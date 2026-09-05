@@ -152,17 +152,15 @@ Stated here because a limitation you can defend is worth more than a claim you c
   Forest is a *corroborating* signal only: it is evaluated exclusively for entities the
   deterministic rules already flagged, carries the smallest weight in the system, and
   can never originate a finding.
-- **No file upload, by design.** The ingestion architecture is specified and the schema
-  is format-agnostic — `closure_time_minutes` is derived at ingestion rather than trusted
-  from a source, which is exactly the seam a JSON / DB-export / API loader plugs into.
-  What does not exist is a path a visitor can feed arbitrary bytes into. Untrusted input
-  is the one part of this system that **cannot be covered by the seed-based regression
-  proof** every other feature here rests on: parsing, encodings, malformed rows, size
-  limits and partial failures form a surface with no fixed dataset to diff against.
-  Shipping it would mean carrying the one capability whose correctness could not be
-  demonstrated the way everything else here can. That capacity went to offline packaging
-  instead, which is testable — and was tested with the network off. The operator loads
-  data server-side. Recorded in full in [PRODUCT.md](PRODUCT.md) and PRD §9.
+- **CSV upload is live; other formats are not.** `POST /api/dataset/upload` takes a CSV
+  alert export, validates it and recomputes every finding and score over it — the demo
+  seed stays the default and one button restores it. Validation rejects rather than
+  repairs: a malformed file is refused with a line-numbered list of problems and the
+  previous dataset stays in place. JSON, database-export and API ingestion remain
+  unbuilt; the schema is format-agnostic and derives `closure_time_minutes` at load
+  time, which is the seam those loaders plug into. The original decision to ship no
+  upload path — and why the regression coverage added on 2026-09-05 withdrew it — is
+  recorded in [PRODUCT.md](PRODUCT.md) and PRD §9.
 - **The dataset is synthetic.** No real SOC data, no real entity, no customer.
 
 ---

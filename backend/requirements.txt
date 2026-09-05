@@ -6,3 +6,7 @@ pandas>=2.2
 scikit-learn>=1.4
 shap>=0.44
 PyYAML>=6.0
+# Required by FastAPI to read multipart/form-data, i.e. the CSV upload endpoint.
+# Pure Python, no network use at runtime -- it is vendored into the offline image by
+# the same pip install as everything else.
+python-multipart>=0.0.9

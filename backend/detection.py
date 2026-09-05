@@ -16,6 +16,7 @@ import math
 import statistics
 
 import config
+import ml
 from ml import ML_RULE_ID, ml_corroboration
 
 EXECUTION_GAP = "EXECUTION_GAP"
@@ -384,7 +385,23 @@ def run_detection(con) -> int:
     # The gate is the whole point: an entity the rules found clean can never receive
     # an ML finding, however anomalous the model considers it.
     already_flagged = {f["entity_id"] for f in findings}
-    findings += ml_corroboration(con, already_flagged)
+    analysis = ml.analyse(con)
+    findings += ml_corroboration(con, already_flagged, analysis)
+
+    # Persist the model's working alongside its conclusion. Same fit, so the profile
+    # on screen is provably the one the finding was computed from.
+    con.execute("DELETE FROM ml_profile")
+    profile = ml.profile_rows(analysis, already_flagged)
+    if profile:
+        con.executemany(
+            """
+            INSERT INTO ml_profile (entity_id, feature, label, value, dataset_mean,
+                                    deviation, contribution, method, anomalous,
+                                    corroborated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            profile,
+        )
 
     con.execute("DELETE FROM findings")
     for i, f in enumerate(findings, start=1):

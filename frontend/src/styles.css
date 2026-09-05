@@ -925,3 +925,146 @@ body {
 }
 
 .tier-calc__total { font-weight: 700; padding-left: 8px; }
+
+/* ============================================================================
+   Dataset provenance and CSV upload (PRD Section 12 deferral discharged).
+   Two utility controls in the masthead, deliberately as quiet as the reset button
+   they sit beside: loading data is preparation, not the point of the page.
+   ========================================================================== */
+
+.masthead__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* A rejected upload reports every problem at once, so the banner has to hold a list
+   rather than a sentence. Same exception border as the inline error banner -- this is
+   the same kind of event, at a different size. */
+.banner--stack {
+  display: block;
+  color: var(--ink);
+}
+
+.banner__head {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  color: var(--exception);
+}
+
+.banner__list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+
+.banner__note {
+  margin: 11px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  max-width: 74ch;
+}
+
+/* ============================================================================
+   ML corroboration profile — the model's working, not just its conclusion.
+
+   Stays inside the subordinate block: smaller type, hairline borders, no colour in
+   the field. The only ink is the exception mark on the two features the attribution
+   leaned on, which is the red pen circling what drove the claim.
+   ========================================================================== */
+
+.ml-panel { margin-top: 12px; }
+
+.ml-panel__caption,
+.ml-panel__none {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  max-width: 74ch;
+}
+
+.ml-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ml-table thead th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+
+.ml-table td,
+.ml-table tbody th {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule);
+  font-weight: 400;
+  text-align: left;
+}
+
+.ml-table tbody tr:last-child td,
+.ml-table tbody tr:last-child th { border-bottom: 0; }
+
+.ml-table tbody tr:nth-child(even) { background: var(--band); }
+
+.ml-table__label { color: var(--ink); }
+.ml-table__num { text-align: right; white-space: nowrap; }
+.ml-table__mean { color: var(--ink-soft); }
+
+/* The driving features carry the claim, so they carry the mark: an exception-ink
+   edge on the row, the same 3px edge language the schedule uses for severity. */
+.ml-table tbody tr.is-driver th[scope="row"] {
+  border-left: 3px solid var(--exception);
+  padding-left: 9px;
+}
+
+.ml-table__plot { width: 168px; }
+
+/* A plotted mark: a centre rule for the peer mean, and a bar to one side of it.
+   Not a filled cell -- the field stays achromatic and the bar reads as drawn. */
+.dev {
+  position: relative;
+  display: block;
+  height: 11px;
+  min-width: 120px;
+}
+
+.dev__axis {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--rule-strong);
+}
+
+.dev__bar {
+  position: absolute;
+  top: 4px;
+  height: 3px;
+  background: var(--ink-soft);
+}
+
+.dev__bar--pos { left: 50%; }
+.dev__bar--neg { right: 50%; }
+
+.is-driver .dev__bar { background: var(--exception); }
+
+@media (max-width: 720px) {
+  /* The plot is the first thing to go: the figures it illustrates are already in the
+     three columns to its left, so nothing is lost that is not still readable. */
+  .ml-table__plot { display: none; }
+  .masthead__actions { width: 100%; }
+}

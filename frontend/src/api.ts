@@ -83,12 +83,53 @@ export interface ResetResult {
   findings_generated: number;
 }
 
-/** Thrown for every failure, always carrying a message safe to render. */
+/** Which dataset the current schedule was computed over. */
+export interface DatasetInfo {
+  source: "demo_seed" | "upload";
+  label: string;
+  loaded_at: string;
+  entity_count: number;
+  record_count: number;
+}
+
+export interface UploadResult {
+  status: string;
+  label: string;
+  entities_loaded: number;
+  records_loaded: number;
+  findings_generated: number;
+}
+
+/** One feature of one entity, with the peer-group figure it is judged against. */
+export interface MlFeature {
+  feature: string;
+  label: string;
+  value: number;
+  dataset_mean: number;
+  deviation: number;
+  contribution: number;
+}
+
+export interface MlProfile {
+  entity_id: string;
+  available: boolean;
+  method: "shap" | "zscore" | "none";
+  anomalous: boolean;
+  corroborated: boolean;
+  peer_count: number;
+  features: MlFeature[];
+}
+
+/** Thrown for every failure, always carrying a message safe to render.
+    `details` carries per-line validation problems from a rejected upload; it is empty
+    for every other kind of failure. */
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  details: string[];
+  constructor(message: string, status: number, details: string[] = []) {
     super(message);
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -103,13 +144,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let message = `Request failed (${response.status}).`;
+    let details: string[] = [];
     try {
       const body = await response.json();
       if (body && typeof body.error === "string") message = body.error;
+      if (body && Array.isArray(body.details)) details = body.details.map(String);
     } catch {
       // Non-JSON error body; keep the generic message rather than crashing.
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, details);
   }
 
   return (await response.json()) as T;
@@ -125,3 +168,18 @@ export const getEvidence = (findingId: string) =>
 
 export const resetDemo = () =>
   request<ResetResult>("/api/demo/reset", { method: "POST" });
+
+export const getDataset = () => request<DatasetInfo>("/api/dataset");
+
+export const getMlProfile = (entityId: string) =>
+  request<MlProfile>(`/api/entities/${encodeURIComponent(entityId)}/ml`);
+
+/** The template is a plain download, not a fetch — the browser saves the file. */
+export const TEMPLATE_URL = `${API_BASE}/api/dataset/template.csv`;
+
+export function uploadDataset(file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  // No Content-Type header: the browser must set the multipart boundary itself.
+  return request<UploadResult>("/api/dataset/upload", { method: "POST", body });
+}

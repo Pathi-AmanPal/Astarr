@@ -17,6 +17,7 @@ import tempfile
 from collections import Counter
 
 import db
+import ingest
 from detection import (NS001_MIN_COHORT_SIZE, NS001_STDDEV_MULTIPLIER, ns001,
                        ns002_min_reporting, run_detection)
 from ml import ML_RULE_ID, build_features, ml_corroboration
@@ -397,6 +398,159 @@ def main() -> int:
     # 3 EG-001 + 4 EG-002 + 1 EG-003 + 5 EG-004 + 1 EG-005 + 1 NS-001 + 1 NS-002
     # 16 deterministic + 2 ML corroboration
     check("18 findings generated", findings_generated == 18, f"got {findings_generated}")
+
+    print("\nML profile persistence (the corroboration layer's working)")
+    profile = con.execute(
+        "SELECT entity_id, feature, value, dataset_mean, deviation, contribution, "
+        "method, anomalous, corroborated FROM ml_profile"
+    ).fetchall()
+    check("a profile row per entity per feature", len(profile) == 12 * 4,
+          f"got {len(profile)}")
+    check("profiles are written for clean entities too, not only flagged ones",
+          len({p[0] for p in profile}) == 12, f"{len({p[0] for p in profile})} entities")
+
+    # The profile explains the finding, so the two must agree about who was flagged.
+    ml_entities = set(entities_for(con, ML_RULE_ID))
+    corroborated = {p[0] for p in profile if p[8]}
+    check("profile's corroborated set equals the ML findings' entities",
+          corroborated == ml_entities, f"{sorted(corroborated)} vs {sorted(ml_entities)}")
+
+    # Prove the negative: an entity the model calls anomalous but no rule flagged must
+    # be recorded as anomalous-but-not-corroborated, never promoted into a finding.
+    anomalous = {p[0] for p in profile if p[7]}
+    check("every corroborated entity is also anomalous",
+          corroborated <= anomalous, f"{sorted(corroborated - anomalous)} not anomalous")
+    check("no entity is corroborated without a deterministic finding",
+          all(con.execute(
+              "SELECT COUNT(*) FROM findings WHERE entity_id = ? AND rule_id <> ?",
+              [e, ML_RULE_ID]).fetchone()[0] > 0 for e in corroborated))
+
+    means = {(p[1], round(p[3], 9)) for p in profile}
+    check("the dataset mean for a feature is the same for every entity",
+          len(means) == 4, f"{len(means)} distinct (feature, mean) pairs for 4 features")
+
+    print("\nCSV ingestion (upload path)")
+    entities_in, records_in = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    check("the downloadable template is itself a valid upload",
+          len(entities_in) == 2 and len(records_in) == 3,
+          f"{len(entities_in)} entities, {len(records_in)} records")
+
+    derived = [r for r in records_in if r[0] == "ALT-0002"][0]
+    check("closure_time_minutes is honoured when supplied", derived[10] == 148.0,
+          f"got {derived[10]}")
+
+    no_closure_col = "\n".join(
+        line.rsplit(",", 1)[0] for line in ingest.TEMPLATE_CSV.strip().split("\n")
+    )
+    _e, derived_records = ingest.parse_csv(no_closure_col)
+    check("closure_time_minutes is derived from the timestamps when omitted",
+          [r for r in derived_records if r[0] == "ALT-0002"][0][10] == 148.0)
+
+    def rejects(label: str, text: str, expect_substring: str) -> None:
+        try:
+            ingest.parse_csv(text)
+        except ingest.IngestError as exc:
+            joined = " | ".join(exc.errors)
+            check(label, expect_substring in joined, joined[:110])
+        else:
+            check(label, False, "accepted a file it should have rejected")
+
+    rejects("a missing required column is refused",
+            "record_id,entity_id\nA-1,E-1\n", "Missing required column")
+    rejects("an unknown severity is refused",
+            ingest.TEMPLATE_CSV.replace("HIGH,Malware", "EXTREME,Malware"),
+            "severity 'EXTREME'")
+    rejects("an unreadable timestamp is refused",
+            ingest.TEMPLATE_CSV.replace("2026-01-05T08:00:00,2026", "yesterday,2026"),
+            "not a readable date/time")
+    rejects("a duplicate record_id is refused",
+            ingest.TEMPLATE_CSV + ingest.TEMPLATE_CSV.strip().split("\n")[1] + "\n",
+            "duplicate record_id")
+    rejects("closed_at before opened_at is refused",
+            ingest.TEMPLATE_CSV.replace(
+                "2026-01-05T08:00:00,2026-01-05T08:01:00", "2026-01-05T08:00:00,2026-01-04T08:00:00"),
+            "before opened_at")
+    rejects("a single-entity file is refused (peer rules need a population)",
+            "\n".join(ingest.TEMPLATE_CSV.strip().split("\n")[:3]) + "\n",
+            "at least 2 entities")
+    rejects("a header with no data rows is refused",
+            ingest.TEMPLATE_CSV.strip().split("\n")[0] + "\n", "no data rows")
+    rejects("an empty file is refused", "   ", "empty")
+
+    # Every problem in one pass: a validator that stops at the first error turns fixing
+    # an export into one upload per mistake.
+    multi = ingest.TEMPLATE_CSV.replace("HIGH,Malware", "EXTREME,Malware").replace(
+        "CRITICAL,Unauthorized", "SEVERE,Unauthorized")
+    try:
+        ingest.parse_csv(multi)
+        check("all problems are reported in one pass", False, "accepted an invalid file")
+    except ingest.IngestError as exc:
+        check("all problems are reported in one pass", len(exc.errors) == 2,
+              f"reported {len(exc.errors)}")
+
+    print("\nUploaded data runs the same pipeline as the seed")
+    con3 = db.connect(os.path.join(tempfile.mkdtemp(), "verify3.duckdb"))
+    up_entities, up_records = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    ingest.load(con3, up_entities, up_records, "template.csv")
+    upload_findings = run_detection(con3)
+    check("detection runs over uploaded records without error", upload_findings >= 0,
+          f"{upload_findings} findings")
+    check("provenance records the upload, not the demo seed",
+          db.dataset_meta(con3)["source"] == "upload")
+    check("an upload replaces the previous dataset rather than appending",
+          con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3)
+
+    # Loading the demo seed over an upload must restore it completely.
+    seed(con3)
+    db.set_dataset_meta(con3, source="demo_seed", label="Synthetic demo dataset",
+                        entity_count=12, record_count=248)
+    run_detection(con3)
+    check("the demo seed can be restored over an upload",
+          con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 248
+          and db.dataset_meta(con3)["source"] == "demo_seed")
+    check("restored demo findings match the reference build",
+          con3.execute(snapshot).fetchall() == con.execute(snapshot).fetchall())
+
+    print("\nConcurrent reads on the shared connection")
+    # The detail screen fetches its findings and its ML profile at the same time, and
+    # FastAPI runs sync endpoints on a threadpool -- so two requests hit one DuckDB
+    # connection concurrently. Unguarded, that interleaved reads and produced a
+    # corrupted result (a ValueError out of scoring.py) and a spurious 404, both
+    # intermittently. The endpoints hold a lock; this is the test that they keep doing so.
+    import threading
+
+    import main as api
+
+    api.app.state.con = con
+    errors: list[str] = []
+    observed: list[tuple[str, str]] = []
+    lock = threading.Lock()
+    ids = ["CSE-01", "CSE-02", "CSE-03", "CSE-04", "CSE-05", "CSE-06"]
+
+    def hammer(entity_id: str) -> None:
+        try:
+            for _ in range(6):
+                detail = api.entity_detail(entity_id)
+                profile = api.entity_ml_profile(entity_id)
+                api.list_entities()
+                with lock:
+                    observed.append((detail["entity_id"], profile["entity_id"]))
+        except Exception as exc:  # the failure mode was an exception, so catch broadly
+            with lock:
+                errors.append(f"{entity_id}: {type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=hammer, args=(e,)) for e in ids * 3]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    check("concurrent detail + ML reads raise nothing",
+          not errors, "; ".join(errors[:2]) if errors else "")
+    check("every concurrent response is for the entity that was asked for",
+          all(a == b for a, b in observed) and len(observed) == len(ids) * 3 * 6,
+          f"{len(observed)} responses, "
+          f"{sum(1 for a, b in observed if a != b)} mismatched")
 
     print()
     if _failures:

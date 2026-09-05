@@ -454,10 +454,44 @@ document:
 trust; `min_cohort_size` below 2 is rejected at startup, because that is the value that
 would silently disable the rule.
 
-### Multi-format ingestion: designed, deliberately not live-exposed (2026-09-02)
+### CSV ingestion: deferral discharged (2026-09-05)
 
-**There is no upload endpoint and no upload UI, in Phase 2 either.** This is a decision,
-not an omission, and it needs a prepared one-sentence answer rather than a defensive one.
+**Superseded by the amendment below.** The section that follows is kept because its
+reasoning is still the reason the feature is shaped the way it is.
+
+`POST /api/dataset/upload` now accepts a CSV alert export, validates it, and recomputes
+every finding and score over it. The demo seed remains the default dataset and
+`POST /api/demo/reset` restores it.
+
+**What changed is not the risk assessment — it is that the objection was answered.** The
+decision below turned on one point: untrusted input was the only capability that could
+not sit behind the same regression proof as every rule and score. That is no longer true.
+`verify.py` now covers the ingest path with 11 checks, 8 of which assert a *rejection*:
+an unknown severity, an unreadable timestamp, a duplicate record id, `closed_at` before
+`opened_at`, a missing column, a single-entity file, a header with no rows, and an empty
+file. It also asserts that the downloadable template is itself a valid upload, that
+`closure_time_minutes` derives identically whether supplied or omitted, that an upload
+replaces rather than appends, and that restoring the demo seed reproduces the reference
+findings byte for byte.
+
+Three properties make the feature demo-safe rather than merely present:
+
+- **Validation refuses, it never repairs.** Parsing completes before anything is written,
+  so a rejected file leaves the previous dataset fully in place. The judge who hands it a
+  bad file sees a line-numbered list of problems over an unchanged schedule.
+- **Every problem is reported at once**, up to 25, rather than one per upload round.
+- **The demo seed is always one click away**, so a live upload that goes wrong costs
+  seconds rather than the demo.
+
+The prepared answer therefore changes:
+
+> *"The tool ships with a verified synthetic dataset so every number on screen can be
+> checked against a regression suite. It also takes a real CSV export — the same rules,
+> the same scoring, computed over your data. Validation rejects a malformed file and
+> tells you which line is wrong; the demo dataset is restored with one button."*
+
+~~**There is no upload endpoint and no upload UI, in Phase 2 either.** This is a decision,
+not an omission, and it needs a prepared one-sentence answer rather than a defensive one.~~
 
 The ingestion *architecture* is real and documented: the record schema is format-agnostic,
 and `closure_time_minutes` is derived at ingestion rather than trusted from a source, which
@@ -492,7 +526,9 @@ wording.
 
 ~~YAML-configurable thresholds~~ and ~~the weighted-tier scoring formula~~ (**both
 implemented in Phase 2, see amendments above**), multi-format
-ingestion, any file-upload UI or endpoint accepting user-supplied data, ~~Docker/offline
+ingestion (JSON, DB export, API — CSV only is implemented), ~~any file-upload UI or
+endpoint accepting user-supplied data~~ (**CSV upload implemented 2026-09-05, see
+amendment above**), ~~Docker/offline
 image packaging~~ (**being built in Phase 2**), authentication and roles, ~~peer-cohort grouping for Negative Space~~
 (**infrastructure implemented in Phase 2 behind a validity gate, see amendment above**),
 trend analysis and time-series charts, and rule/model versioning and run history. These are documented and planned, not forgotten — they

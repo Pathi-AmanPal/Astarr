@@ -6,7 +6,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, EntityDetail as Detail, Finding, TierScore, getEntity } from "../api";
+import {
+  ApiError,
+  EntityDetail as Detail,
+  Finding,
+  MlProfile,
+  TierScore,
+  getEntity,
+  getMlProfile,
+} from "../api";
 import { Loading, ErrorState, NotFound, Empty } from "../components/States";
 import { TIER_LABEL, entityRef, findingRef, formatScore } from "../workpaper";
 
@@ -126,6 +134,126 @@ function RuleCard({ group, entityId }: { group: RuleGroup; entityId: string }) {
   );
 }
 
+/** The corroboration layer's working, made readable.
+ *
+ *  ML-001's explanation names its top two drivers in a sentence. That justifies the
+ *  finding but cannot be interrogated: a supervisor's next question is "compared with
+ *  what?", and prose cannot answer it. This panel puts the whole feature vector on the
+ *  page — each figure against the peer-group mean it was judged against, and how far
+ *  from it in population sigmas.
+ *
+ *  It renders for entities the model did NOT flag too. "The model considered this
+ *  entity normal" is a supervisory statement, and it is only worth anything if the
+ *  figures behind it are visible.
+ */
+function MlPanel({ profile }: { profile: MlProfile }) {
+  if (!profile.available) {
+    return (
+      <p className="ml-panel__none">
+        The corroboration layer did not run for this dataset — it needs at least two
+        entities to have a peer group to compare against.
+      </p>
+    );
+  }
+
+  // Scale the bars off the largest deviation on this entity, with a 1.5-sigma floor so
+  // a set of small, unremarkable deviations does not get magnified into drama.
+  const scale = Math.max(1.5, ...profile.features.map((f) => Math.abs(f.deviation)));
+
+  // The two features the model leaned on hardest. Marked in exception ink because they
+  // are the reason for the claim — the same red pen that circles a triggering value in
+  // an evidence table, not a severity colour.
+  const drivers = new Set(
+    [...profile.features]
+      .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+      .slice(0, 2)
+      .map((f) => f.feature),
+  );
+
+  return (
+    <div className="ml-panel">
+      <p className="ml-panel__caption">
+        Isolation Forest over {profile.peer_count} entities ·{" "}
+        {profile.method === "shap"
+          ? "SHAP feature attribution"
+          : "per-feature deviation from the dataset mean"}{" "}
+        ·{" "}
+        {profile.anomalous
+          ? "this entity sits outside the normal profile"
+          : "this entity sits inside the normal profile"}
+        {profile.anomalous && !profile.corroborated && (
+          <> — but no deterministic rule fired, so no finding was raised</>
+        )}
+      </p>
+
+      <div className="sheet">
+        <table className="ml-table">
+          <thead>
+            <tr>
+              <th scope="col">Feature</th>
+              <th scope="col" className="ml-table__num">This entity</th>
+              <th scope="col" className="ml-table__num">Peer mean</th>
+              <th scope="col" className="ml-table__num">Deviation</th>
+              {/* Without this column the driver marks look arbitrary: a feature can be
+                  marked at +0.82σ while an unmarked one sits at +0.72σ, because the
+                  ranking is by attribution, not by raw deviation. Showing the number
+                  the ranking actually uses is what makes the mark legible. */}
+              <th scope="col" className="ml-table__num">
+                {profile.method === "shap" ? "SHAP" : "Weight"}
+              </th>
+              <th scope="col" className="ml-table__plot">
+                <span className="sr-only">Deviation from the peer mean</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {profile.features.map((f) => {
+              const driver = drivers.has(f.feature) && profile.anomalous;
+              const width = `${(Math.abs(f.deviation) / scale) * 50}%`;
+              return (
+                <tr key={f.feature} className={driver ? "is-driver" : undefined}>
+                  <th scope="row" className="ml-table__label">
+                    {f.label}
+                  </th>
+                  <td className="ml-table__num num">{fmt(f.value)}</td>
+                  <td className="ml-table__num num ml-table__mean">
+                    {fmt(f.dataset_mean)}
+                  </td>
+                  <td className="ml-table__num num">
+                    {f.deviation >= 0 ? "+" : "−"}
+                    {fmt(Math.abs(f.deviation))}σ
+                  </td>
+                  <td
+                    className={`ml-table__num num${driver ? "" : " ml-table__mean"}`}
+                  >
+                    {fmt(Math.abs(f.contribution))}
+                  </td>
+                  <td className="ml-table__plot">
+                    {/* A plotted mark, not a filled cell: a centre rule for the peer
+                        mean and a bar showing which side of it this entity falls. */}
+                    <span className="dev" aria-hidden="true">
+                      <span className="dev__axis" />
+                      <span
+                        className={`dev__bar ${f.deviation >= 0 ? "dev__bar--pos" : "dev__bar--neg"}`}
+                        style={{ width }}
+                      />
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Two decimals, trailing zeros trimmed — the backend formats its prose the same way. */
+function fmt(value: number): string {
+  return value.toFixed(2).replace(/\.?0+$/, "") || "0";
+}
+
 function Section({
   title,
   tab,
@@ -161,6 +289,7 @@ function Section({
 export default function EntityDetailPage() {
   const { id = "" } = useParams();
   const [entity, setEntity] = useState<Detail | null>(null);
+  const [ml, setMl] = useState<MlProfile | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
 
   const load = useCallback(async () => {
@@ -170,6 +299,15 @@ export default function EntityDetailPage() {
     } catch (e) {
       setEntity(null);
       setError(e instanceof ApiError ? e : new ApiError("Something went wrong.", 500));
+      return;
+    }
+    // The corroboration profile is supporting detail. If it fails, the findings and
+    // the footed total still render — the panel simply does not appear, which is the
+    // correct degradation for a layer the product calls subordinate.
+    try {
+      setMl(await getMlProfile(id));
+    } catch {
+      setMl(null);
     }
   }, [id]);
 
@@ -286,14 +424,28 @@ export default function EntityDetailPage() {
             groups={spaces}
             entityId={entity.entity_id}
           />
-          {corroboration.length > 0 && (
+          {/* The subordinate block stays subordinate whether or not a finding was
+              raised: below both detection sections, behind a rule, dashed tab, smaller
+              heading. What changes is that the layer can now be read rather than only
+              believed. */}
+          {(corroboration.length > 0 || ml) && (
             <div className="subordinate">
-              <Section
-                title="ML Corroboration"
-                tab="ML"
-                groups={corroboration}
-                entityId={entity.entity_id}
-              />
+              {corroboration.length > 0 ? (
+                <Section
+                  title="ML Corroboration"
+                  tab="ML"
+                  groups={corroboration}
+                  entityId={entity.entity_id}
+                />
+              ) : (
+                <h2 className="section-title section-title--tabbed">
+                  <span className="index-tab" aria-hidden="true">ML</span>
+                  ML Corroboration
+                </h2>
+              )}
+
+              {ml && <MlPanel profile={ml} />}
+
               <p className="subordinate__note">
                 Supporting signal only. An unsupervised Isolation Forest is evaluated
                 solely for entities the deterministic rules already flagged, so it can

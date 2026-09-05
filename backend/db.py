@@ -47,6 +47,41 @@ CREATE TABLE IF NOT EXISTS findings (
     explanation         TEXT NOT NULL,
     evidence_record_ids TEXT NOT NULL
 );
+
+-- Provenance. A supervisor reading a schedule must be able to see whether it was
+-- computed over the built-in demo dataset or over a file they uploaded; a screenshot
+-- of findings with no dataset attribution is not evidence of anything.
+CREATE TABLE IF NOT EXISTS dataset_meta (
+    id           INTEGER PRIMARY KEY,   -- always 1; one dataset is loaded at a time
+    source       TEXT NOT NULL,         -- 'demo_seed' | 'upload'
+    label        TEXT NOT NULL,
+    loaded_at    TIMESTAMP NOT NULL,
+    entity_count INTEGER NOT NULL,
+    record_count INTEGER NOT NULL
+);
+
+-- The ML layer's working, persisted rather than discarded.
+--
+-- ML-001's explanation names its top two drivers in prose, which is enough to justify
+-- the finding but not enough to interrogate it. These rows carry the whole feature
+-- vector for every entity -- value, dataset mean, deviation and attribution -- so the
+-- corroboration can be read the way the deterministic rules can: by looking at the
+-- numbers it was computed from.
+--
+-- Written for EVERY entity, not only flagged ones. A supervisor's first question about
+-- an anomaly score is "compared with what?", and the answer is the peer group.
+CREATE TABLE IF NOT EXISTS ml_profile (
+    entity_id    TEXT NOT NULL,
+    feature      TEXT NOT NULL,
+    label        TEXT NOT NULL,
+    value        DOUBLE NOT NULL,
+    dataset_mean DOUBLE NOT NULL,
+    deviation    DOUBLE NOT NULL,   -- population sigmas from the mean
+    contribution DOUBLE NOT NULL,   -- SHAP value, or the deviation when SHAP is absent
+    method       TEXT NOT NULL,     -- 'shap' | 'zscore'
+    anomalous    BOOLEAN NOT NULL,  -- the forest placed this entity outside the profile
+    corroborated BOOLEAN NOT NULL   -- ... and a deterministic rule had already fired
+);
 """
 
 
@@ -63,7 +98,52 @@ def is_empty(con: duckdb.DuckDBPyConnection) -> bool:
 
 
 def wipe(con: duckdb.DuckDBPyConnection) -> None:
-    """Remove all rows. Used by the demo reset before re-seeding."""
+    """Remove all rows. Used by the demo reset and by an upload before loading."""
     con.execute("DELETE FROM findings")
+    con.execute("DELETE FROM ml_profile")
     con.execute("DELETE FROM records")
     con.execute("DELETE FROM entities")
+    con.execute("DELETE FROM dataset_meta")
+
+
+def set_dataset_meta(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    source: str,
+    label: str,
+    entity_count: int,
+    record_count: int,
+) -> None:
+    """Record which dataset is loaded and when.
+
+    `loaded_at` is the one wall-clock read in the system. It is provenance shown in the
+    masthead, never an input to a rule, a threshold or a score -- the determinism the
+    seed and verify.py depend on is untouched by it.
+    """
+    from datetime import datetime
+
+    con.execute("DELETE FROM dataset_meta")
+    con.execute(
+        """
+        INSERT INTO dataset_meta (id, source, label, loaded_at, entity_count, record_count)
+        VALUES (1, ?, ?, ?, ?, ?)
+        """,
+        [source, label, datetime.now().replace(microsecond=0), entity_count, record_count],
+    )
+
+
+def dataset_meta(con: duckdb.DuckDBPyConnection) -> dict | None:
+    """The loaded dataset's provenance, or None before anything is loaded."""
+    row = con.execute(
+        "SELECT source, label, loaded_at, entity_count, record_count "
+        "FROM dataset_meta WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "source": row[0],
+        "label": row[1],
+        "loaded_at": row[2],
+        "entity_count": row[3],
+        "record_count": row[4],
+    }

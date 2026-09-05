@@ -2,10 +2,19 @@
     The leftmost column is the working-paper reference: this sheet is an index,
     and every row points at the schedule that proves its figure. */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { ApiError, EntitySummary, getEntities, resetDemo } from "../api";
+import {
+  ApiError,
+  DatasetInfo,
+  EntitySummary,
+  TEMPLATE_URL,
+  getDataset,
+  getEntities,
+  resetDemo,
+  uploadDataset,
+} from "../api";
 import { Loading, ErrorState } from "../components/States";
 import { WORKPAPER_ID, entityRef, formatScore } from "../workpaper";
 
@@ -33,9 +42,17 @@ function edgeClass(score: number): string {
 export default function EntityList() {
   const navigate = useNavigate();
   const [entities, setEntities] = useState<EntitySummary[] | null>(null);
+  const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  // A rejected upload reports every problem at once; the banner lists them rather
+  // than making the user re-upload to discover the next one.
+  const [uploadError, setUploadError] = useState<{ message: string; details: string[] } | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const busy = resetting || uploading;
 
   const load = useCallback(async () => {
     setError(null);
@@ -45,7 +62,37 @@ export default function EntityList() {
       setEntities(null);
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
     }
+    // Provenance is secondary: a schedule that loads while /api/dataset fails should
+    // still render, captioned with the demo default rather than not at all.
+    try {
+      setDataset(await getDataset());
+    } catch {
+      setDataset(null);
+    }
   }, []);
+
+  async function onFileChosen(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    // Clear immediately so re-picking the same file after a fix still fires onChange.
+    event.target.value = "";
+    if (!file) return;
+
+    setUploading(true);
+    setUploadError(null);
+    setResetError(null);
+    try {
+      await uploadDataset(file);
+      await load();
+    } catch (e) {
+      const err = e instanceof ApiError ? e : null;
+      setUploadError({
+        message: err?.message ?? "Upload failed.",
+        details: err?.details ?? [],
+      });
+    } finally {
+      setUploading(false);
+    }
+  }
 
   useEffect(() => {
     void load();
@@ -78,18 +125,44 @@ export default function EntityList() {
           </p>
           <p className="masthead__ref">
             <span>Working Paper {WORKPAPER_ID}</span>
-            <span>Synthetic demo dataset</span>
+            {/* Provenance, not decoration: a schedule computed over an uploaded export
+                must never be mistaken for one computed over the demo dataset. */}
+            <span>
+              {dataset
+                ? dataset.source === "upload"
+                  ? `Source: ${dataset.label}`
+                  : "Synthetic demo dataset"
+                : "Synthetic demo dataset"}
+            </span>
             <span>Prepared for NCIIPC Supervisory Review</span>
           </p>
         </div>
-        <button
-          type="button"
-          className="btn"
-          onClick={onReset}
-          disabled={resetting}
-        >
-          {resetting ? "Resetting…" : "Reset Demo Data"}
-        </button>
+
+        <div className="masthead__actions">
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".csv,text/csv"
+            className="sr-only"
+            onChange={onFileChosen}
+          />
+          <button
+            type="button"
+            className="btn"
+            onClick={() => fileInput.current?.click()}
+            disabled={busy}
+          >
+            {uploading ? "Loading…" : "Load CSV"}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={onReset}
+            disabled={busy}
+          >
+            {resetting ? "Resetting…" : "Reset Demo Data"}
+          </button>
+        </div>
       </div>
 
       {entities && (
@@ -112,9 +185,40 @@ export default function EntityList() {
       {resetError && (
         <div className="banner" role="alert">
           <span>{resetError}</span>
-          <button type="button" className="btn" onClick={onReset} disabled={resetting}>
+          <button type="button" className="btn" onClick={onReset} disabled={busy}>
             Retry
           </button>
+        </div>
+      )}
+
+      {uploadError && (
+        <div className="banner banner--stack" role="alert">
+          <div className="banner__head">
+            <span>{uploadError.message}</span>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setUploadError(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+          {uploadError.details.length > 0 && (
+            <ul className="banner__list">
+              {uploadError.details.map((d) => (
+                <li key={d}>{d}</li>
+              ))}
+            </ul>
+          )}
+          <p className="banner__note">
+            Expected columns: record_id, entity_id, entity_name, sector, asset_id,
+            severity, category, opened_at, disposition — plus optional closed_at,
+            escalated, investigation_notes, closure_time_minutes.{" "}
+            <a className="btn--link" href={TEMPLATE_URL}>
+              Download a template
+            </a>
+            .
+          </p>
         </div>
       )}
 

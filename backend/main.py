@@ -1,20 +1,28 @@
-"""FastAPI app (PRD Section 6). No authentication, no upload endpoints.
+"""FastAPI app (PRD Section 6, amended 2026-09-05: CSV upload added).
 
 The database is seeded automatically on startup when missing or empty, so no manual
-seeding step ever exists (NFR 4).
+seeding step ever exists (NFR 4). The demo seed remains the default dataset and the
+reset target; `POST /api/dataset/upload` replaces it with a real alert export, and
+`POST /api/demo/reset` puts the demo back.
+
+Still no authentication and still no outbound network calls: an upload is read from the
+request body and written to the local DuckDB file, nothing leaves the machine.
 """
 
 from __future__ import annotations
 
+import functools
 import os
+import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db
+import ingest
 import models
 from detection import run_detection
 from scoring import entity_scores, ranked_entities
@@ -25,11 +33,60 @@ RECORD_COLUMNS = [
     "closed_at", "escalated", "disposition", "investigation_notes", "closure_time_minutes",
 ]
 
+# A mis-selected file (a disk image, a video) should fail immediately rather than be
+# read into memory first. Well above the 50k-row ceiling ingest.py enforces.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+DEMO_LABEL = "Synthetic demo dataset"
+
+# One DuckDB connection is shared by every request, and FastAPI runs sync endpoints on
+# a threadpool -- so two requests arriving together execute on the same connection
+# concurrently and interleave each other's result sets. The observed failure was a
+# `ValueError: dictionary update sequence element #0 has length 1` out of scoring.py
+# and a spurious 404 from the entity lookup, i.e. a corrupted read, not a crash at the
+# point of misuse.
+#
+# It stayed latent while every screen made one call at a time. The detail page now
+# fetches its findings and its ML profile together, which is what surfaced it.
+#
+# Serialising is the right trade here rather than a connection pool: the dataset is a
+# few hundred rows, every query is sub-millisecond, and a supervisory tool has one
+# reader. Correctness over a concurrency win nobody can measure.
+_db_lock = threading.RLock()
+
+
+def serialised(fn):
+    """Run a sync endpoint holding the database lock.
+
+    Applied under @app.get/@app.post so FastAPI still reads the original signature
+    through functools.wraps, and its dependency injection is unaffected.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _db_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def _seed_demo(con) -> tuple[int, int]:
+    """Load the built-in demo dataset and recompute. Returns (entities, findings)."""
+    entities_loaded, records_loaded = seed(con)
+    findings_generated = run_detection(con)
+    db.set_dataset_meta(con, source="demo_seed", label=DEMO_LABEL,
+                        entity_count=entities_loaded, record_count=records_loaded)
+    return entities_loaded, findings_generated
+
 
 def _ensure_seeded(con) -> None:
     if db.is_empty(con):
-        seed(con)
-        run_detection(con)
+        _seed_demo(con)
+    elif db.dataset_meta(con) is None:
+        # A database written before provenance existed. Label it from what is actually
+        # in it rather than guessing, and never re-seed over a user's uploaded data.
+        entity_count = con.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+        record_count = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+        db.set_dataset_meta(con, source="demo_seed", label=DEMO_LABEL,
+                            entity_count=entity_count, record_count=record_count)
 
 
 @asynccontextmanager
@@ -70,11 +127,13 @@ def health():
 
 
 @app.get("/api/entities", response_model=list[models.EntitySummary])
+@serialised
 def list_entities():
     return ranked_entities(app.state.con)
 
 
 @app.get("/api/entities/{entity_id}", response_model=models.EntityDetail)
+@serialised
 def entity_detail(entity_id: str):
     con = app.state.con
     row = con.execute(
@@ -113,6 +172,7 @@ def entity_detail(entity_id: str):
 
 
 @app.get("/api/findings/{finding_id}/evidence", response_model=models.Evidence)
+@serialised
 def finding_evidence(finding_id: str):
     con = app.state.con
     row = con.execute(
@@ -143,12 +203,154 @@ def finding_evidence(finding_id: str):
     }
 
 
+@app.get("/api/entities/{entity_id}/ml", response_model=models.MlProfile)
+@serialised
+def entity_ml_profile(entity_id: str):
+    """The corroboration layer's working for one entity.
+
+    Served whether or not the entity carries an ML finding: "the model did not consider
+    this entity unusual" is a supervisory answer, and it is only credible if the figures
+    behind it can be read too.
+    """
+    con = app.state.con
+    exists = con.execute(
+        "SELECT 1 FROM entities WHERE entity_id = ?", [entity_id]
+    ).fetchone()
+    if exists is None:
+        raise HTTPException(status_code=404, detail={"error": "Entity not found"})
+
+    rows = con.execute(
+        """
+        SELECT feature, label, value, dataset_mean, deviation, contribution,
+               method, anomalous, corroborated
+        FROM ml_profile WHERE entity_id = ?
+        """,
+        [entity_id],
+    ).fetchall()
+
+    peer_count = con.execute(
+        "SELECT COUNT(DISTINCT entity_id) FROM ml_profile"
+    ).fetchone()[0]
+
+    if not rows:
+        return {
+            "entity_id": entity_id, "available": False, "method": "none",
+            "anomalous": False, "corroborated": False, "peer_count": peer_count,
+            "features": [],
+        }
+
+    return {
+        "entity_id": entity_id,
+        "available": True,
+        "method": rows[0][6],
+        "anomalous": bool(rows[0][7]),
+        "corroborated": bool(rows[0][8]),
+        "peer_count": peer_count,
+        "features": [
+            {
+                "feature": r[0], "label": r[1], "value": r[2],
+                "dataset_mean": r[3], "deviation": r[4], "contribution": r[5],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/dataset", response_model=models.DatasetInfo)
+@serialised
+def dataset_info():
+    """Provenance for the loaded dataset, shown in the masthead."""
+    meta = db.dataset_meta(app.state.con)
+    if meta is None:
+        raise HTTPException(status_code=404, detail={"error": "No dataset loaded"})
+    return meta
+
+
+@app.get("/api/dataset/template.csv", include_in_schema=False)
+def dataset_template():
+    """A valid three-row example of the upload format.
+
+    Present so the first question after seeing an upload control -- "what columns does
+    it want?" -- is answered by downloading a file that is guaranteed to import, rather
+    than by reading documentation.
+    """
+    return Response(
+        content=ingest.TEMPLATE_CSV,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="sat-sa-template.csv"'},
+    )
+
+
+@app.post("/api/dataset/upload", response_model=models.UploadResult)
+async def dataset_upload(file: UploadFile = File(...)):
+    """Replace the demo dataset with an uploaded alert export.
+
+    Rejected uploads leave the previous dataset untouched: parsing and validation both
+    complete before anything is written, so a bad file cannot leave the tool holding
+    half a dataset in front of an audience.
+    """
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"error": f"File is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+                    "details": []},
+        )
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "File is not UTF-8 text. Export it as CSV, not XLSX.",
+                    "details": []},
+        )
+
+    try:
+        entities, records = ingest.parse_csv(text)
+    except ingest.IngestError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"{len(exc.errors)} problem(s) in the file — nothing was "
+                             f"loaded, the previous dataset is still in place.",
+                    "details": exc.errors},
+        )
+
+    con = app.state.con
+    label = os.path.basename(file.filename or "uploaded.csv")
+    # The lock is taken around the database work only, never across an await: this
+    # endpoint runs on the event loop, and holding a blocking lock over a suspension
+    # point would stall every other request rather than merely serialise this one.
+    try:
+        with _db_lock:
+            entities_loaded, records_loaded = ingest.load(con, entities, records, label)
+            findings_generated = run_detection(con)
+    except Exception as exc:
+        # The dataset is now indeterminate; restore the demo rather than serve a
+        # half-written schedule.
+        with _db_lock:
+            _seed_demo(con)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"Load failed and the demo dataset was restored: {exc}",
+                    "details": []},
+        )
+
+    return {
+        "status": "upload_complete",
+        "label": label,
+        "entities_loaded": entities_loaded,
+        "records_loaded": records_loaded,
+        "findings_generated": findings_generated,
+    }
+
+
 @app.post("/api/demo/reset", response_model=models.ResetResult)
+@serialised
 def demo_reset():
+    """Restore the built-in demo dataset, discarding any upload."""
     con = app.state.con
     try:
-        entities_loaded, _records = seed(con)
-        findings_generated = run_detection(con)
+        entities_loaded, findings_generated = _seed_demo(con)
     except Exception as exc:  # surfaced to the UI as a retry-able banner
         raise HTTPException(status_code=500, detail={"error": f"Reset failed: {exc}"})
     return {

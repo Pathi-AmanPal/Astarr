@@ -87,9 +87,55 @@ class Evidence(BaseModel):
     records: list[Record]
 
 
+class MlFeature(BaseModel):
+    """One feature of one entity, with the peer-group figure it is judged against."""
+
+    feature: str
+    label: str
+    value: float
+    dataset_mean: float
+    deviation: float
+    contribution: float
+
+
+class MlProfile(BaseModel):
+    """The corroboration layer's working for a single entity.
+
+    `available` is false when the layer could not run (fewer than two entities, or
+    scikit-learn absent). The UI states that rather than rendering an empty panel that
+    looks like "the model found nothing".
+    """
+
+    entity_id: str
+    available: bool
+    method: str
+    anomalous: bool
+    corroborated: bool
+    peer_count: int
+    features: list[MlFeature]
+
+
+class DatasetInfo(BaseModel):
+    """Which dataset the current schedule was computed over."""
+
+    source: str          # 'demo_seed' | 'upload'
+    label: str
+    loaded_at: datetime
+    entity_count: int
+    record_count: int
+
+
 class ResetResult(BaseModel):
     status: str
     entities_loaded: int
+    findings_generated: int
+
+
+class UploadResult(BaseModel):
+    status: str
+    label: str
+    entities_loaded: int
+    records_loaded: int
     findings_generated: int
 
 
