@@ -284,8 +284,6 @@ body {
 .edge-caution   { --edge: var(--caution); }
 .edge-exception { --edge: var(--exception); }
 
-.zero { color: var(--ink-faint); }
-
 /* A clean entity is a real result, but it is not the reading target. Its figure
    recedes to a quiet register so the ranked exceptions carry the eye first. */
 .score-cell--zero .score-value {
