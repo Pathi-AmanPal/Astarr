@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { ApiError, EntitySummary, getEntities, resetDemo } from "../api";
+import { ApiError, EntitySummary, getEntities, resetDemo, uploadDataset } from "../api";
 import { Loading, ErrorState } from "../components/States";
 import { WORKPAPER_ID, entityRef, formatScore } from "../workpaper";
 
@@ -65,6 +65,22 @@ export default function EntityList() {
     }
   }
 
+  async function onFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setResetting(true);
+    setResetError(null);
+    try {
+      await uploadDataset(file);
+      await load();
+    } catch (err) {
+      setResetError(err instanceof ApiError ? err.message : "Upload failed.");
+    } finally {
+      setResetting(false);
+      e.target.value = "";
+    }
+  }
+
   const totalAlerts = entities?.reduce((n, e) => n + e.record_count, 0) ?? 0;
   const totalFindings = entities?.reduce((n, e) => n + e.finding_count, 0) ?? 0;
 
@@ -78,18 +94,30 @@ export default function EntityList() {
           </p>
           <p className="masthead__ref">
             <span>Working Paper {WORKPAPER_ID}</span>
-            <span>Synthetic demo dataset</span>
+            <span>Custom / Synthetic Dataset</span>
             <span>Prepared for NCIIPC Supervisory Review</span>
           </p>
         </div>
-        <button
-          type="button"
-          className="btn"
-          onClick={onReset}
-          disabled={resetting}
-        >
-          {resetting ? "Resetting…" : "Reset Demo Data"}
-        </button>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <label className="btn" style={{ cursor: "pointer" }}>
+            {resetting ? "Processing…" : "Upload CSV / JSON"}
+            <input
+              type="file"
+              accept=".csv,.json"
+              style={{ display: "none" }}
+              onChange={onFileUpload}
+              disabled={resetting}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn"
+            onClick={onReset}
+            disabled={resetting}
+          >
+            {resetting ? "Resetting…" : "Reset Demo Data"}
+          </button>
+        </div>
       </div>
 
       {entities && (

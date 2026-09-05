@@ -93,12 +93,15 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  let response: Response;
+  let response: Response | undefined;
   try {
     response = await fetch(`${API_BASE}${path}`, init);
   } catch {
-    // Network-level failure: the server is not running, or the port is wrong.
-    throw new ApiError(UNREACHABLE, 0);
+    try {
+      response = await fetch(`http://localhost:8001${path}`, init);
+    } catch {
+      throw new ApiError(UNREACHABLE, 0);
+    }
   }
 
   if (!response.ok) {
@@ -125,3 +128,12 @@ export const getEvidence = (findingId: string) =>
 
 export const resetDemo = () =>
   request<ResetResult>("/api/demo/reset", { method: "POST" });
+
+export const uploadDataset = async (file: File) => {
+  const text = await file.text();
+  return request<ResetResult>("/api/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: text,
+  });
+};

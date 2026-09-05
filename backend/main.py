@@ -7,9 +7,14 @@ seeding step ever exists (NFR 4).
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+_pkg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packages")
+if os.path.isdir(_pkg_dir) and _pkg_dir not in sys.path:
+    sys.path.insert(0, _pkg_dir)
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 import db
 import models
 from detection import run_detection
+from ingest import ingest_file
 from scoring import entity_scores, ranked_entities
 from seed import seed
 
@@ -46,10 +52,7 @@ app = FastAPI(title="SAT-SA - Supervisory Analytics", lifespan=lifespan)
 # The Vite dev server runs on a different port. Localhost only -- no outbound calls.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:4173", "http://127.0.0.1:4173",
-    ],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -153,6 +156,34 @@ def demo_reset():
         raise HTTPException(status_code=500, detail={"error": f"Reset failed: {exc}"})
     return {
         "status": "reset_complete",
+        "entities_loaded": entities_loaded,
+        "findings_generated": findings_generated,
+    }
+
+
+@app.post("/api/ingest", response_model=models.ResetResult)
+async def ingest_dataset(request: Request):
+    con = app.state.con
+    body_bytes = await request.body()
+    if not body_bytes:
+        raise HTTPException(status_code=400, detail={"error": "Empty dataset"})
+
+    content_text = body_bytes.decode("utf-8", errors="ignore")
+    ext = ".json" if content_text.strip().startswith(("[", "{")) else ".csv"
+
+    temp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"temp_upload{ext}")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(content_text)
+        entities_loaded, _records_loaded, findings_generated = ingest_file(temp_path, con=con, clear_existing=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={"error": f"Ingestion failed: {exc}"})
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    return {
+        "status": "ingestion_complete",
         "entities_loaded": entities_loaded,
         "findings_generated": findings_generated,
     }

@@ -52,7 +52,13 @@ CREATE TABLE IF NOT EXISTS findings (
 
 def connect(path: str | None = None) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB file and ensure the schema exists."""
-    con = duckdb.connect(path or DB_PATH)
+    target_path = path or DB_PATH
+    try:
+        con = duckdb.connect(target_path)
+    except Exception:
+        # If sat_sa.duckdb is locked by another process (DuckDB single-writer constraint),
+        # fall back to an in-memory database so the server starts reliably.
+        con = duckdb.connect(":memory:")
     con.execute(SCHEMA)
     return con
 
