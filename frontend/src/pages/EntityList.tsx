@@ -215,7 +215,11 @@ export default function EntityList() {
                     </span>
                   </td>
                   <td className="col-score">
-                    <span className={`score-cell ${edgeClass(e.risk_score)}`}>
+                    <span
+                      className={`score-cell ${edgeClass(e.risk_score)}${
+                        e.risk_score === 0 ? " score-cell--zero" : ""
+                      }`}
+                    >
                       <span className="score-value">{formatScore(e.risk_score)}</span>
                       {/* NOT "Maximum": under weighted tiers a capped tier does not
                           mean a maximum score. CSE-01 caps its Execution Gap tier at
