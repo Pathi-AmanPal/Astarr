@@ -301,12 +301,12 @@ async def dataset_upload(file: UploadFile = File(...)):
     except UnicodeDecodeError:
         raise HTTPException(
             status_code=400,
-            detail={"error": "File is not UTF-8 text. Export it as CSV, not XLSX.",
+            detail={"error": "File is not UTF-8 text. Export it as CSV or JSON, not XLSX.",
                     "details": []},
         )
 
     try:
-        entities, records = ingest.parse_csv(text)
+        entities, records = ingest.parse(text, file.filename or "")
     except ingest.IngestError as exc:
         raise HTTPException(
             status_code=400,

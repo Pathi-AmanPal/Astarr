@@ -87,7 +87,26 @@ CREATE TABLE IF NOT EXISTS ml_profile (
 
 def connect(path: str | None = None) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB file and ensure the schema exists."""
-    con = duckdb.connect(path or DB_PATH)
+    target_path = path or DB_PATH
+    try:
+        con = duckdb.connect(target_path)
+    except Exception as exc:
+        # DuckDB allows a single writer, so a second server (a stale uvicorn, or the
+        # ingest CLI left running) holds the file and this connect fails. Falling back
+        # to memory keeps the server usable instead of refusing to boot.
+        #
+        # It is announced loudly on purpose. In-memory means every upload and reset is
+        # discarded on restart, and two processes would be serving different data --
+        # discovering that silently, mid-demo, is far worse than a noisy start.
+        print(
+            f"\n*** WARNING: could not open {target_path} ({exc.__class__.__name__}: {exc})."
+            f"\n*** Running IN MEMORY: data will NOT persist across a restart."
+            f"\n*** Another process is probably holding the database. Close the other"
+            f" server, then restart this one.\n",
+            file=sys.stderr,
+            flush=True,
+        )
+        con = duckdb.connect(":memory:")
     con.execute(SCHEMA)
     return con
 

@@ -142,7 +142,7 @@ export default function EntityList() {
           <input
             ref={fileInput}
             type="file"
-            accept=".csv,text/csv"
+            accept=".csv,.json,text/csv,application/json"
             className="sr-only"
             onChange={onFileChosen}
           />
@@ -152,7 +152,7 @@ export default function EntityList() {
             onClick={() => fileInput.current?.click()}
             disabled={busy}
           >
-            {uploading ? "Loading…" : "Load CSV"}
+            {uploading ? "Loading…" : "Upload CSV / JSON"}
           </button>
           <button
             type="button"

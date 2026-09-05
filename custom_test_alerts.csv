@@ -1,0 +1,10 @@
+record_id,entity_id,entity_name,sector,asset_id,severity,category,opened_at,closed_at,escalated,disposition,investigation_notes
+ALT-9001,CSE-99,Entity Sentinel - Nuclear Plant,Energy,AST-801,CRITICAL,Ransomware,2026-02-01T09:00:00,2026-02-01T09:01:10,false,TRUE_POSITIVE,
+ALT-9002,CSE-99,Entity Sentinel - Nuclear Plant,Energy,AST-802,CRITICAL,Ransomware,2026-02-01T09:05:00,2026-02-01T09:06:00,false,TRUE_POSITIVE,
+ALT-9003,CSE-99,Entity Sentinel - Nuclear Plant,Energy,AST-803,HIGH,APT Attack,2026-02-01T10:00:00,2026-02-01T10:00:00,false,FALSE_POSITIVE,
+ALT-9004,CSE-99,Entity Sentinel - Nuclear Plant,Energy,AST-804,HIGH,APT Attack,2026-02-01T10:00:00,2026-02-01T10:00:00,false,FALSE_POSITIVE,
+ALT-9005,CSE-99,Entity Sentinel - Nuclear Plant,Energy,AST-805,HIGH,APT Attack,2026-02-01T10:00:00,2026-02-01T10:00:00,false,FALSE_POSITIVE,
+ALT-9006,CSE-99,Entity Sentinel - Nuclear Plant,Energy,AST-806,HIGH,APT Attack,2026-02-01T10:00:00,2026-02-01T10:00:00,false,FALSE_POSITIVE,
+ALT-9007,CSE-99,Entity Sentinel - Nuclear Plant,Energy,AST-807,HIGH,APT Attack,2026-02-01T10:00:00,2026-02-01T10:00:00,false,FALSE_POSITIVE,
+ALT-9008,CSE-88,Entity Vanguard - Telecom,Telecom,AST-901,LOW,Phishing,2026-02-01T11:00:00,2026-02-01T11:30:00,false,BENIGN,Investigated benign user email
+ALT-9009,CSE-88,Entity Vanguard - Telecom,Telecom,AST-902,LOW,Phishing,2026-02-01T11:05:00,2026-02-01T11:35:00,false,BENIGN,Investigated benign user email

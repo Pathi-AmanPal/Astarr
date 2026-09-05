@@ -30,6 +30,9 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import os
+import sys
 from datetime import datetime
 
 # The columns a row must carry. `entity_name` and `sector` repeat per row: an alert
@@ -260,6 +263,65 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
     return list(entities.values()), records
 
 
+def parse_json(text: str) -> tuple[list[tuple], list[tuple]]:
+    """Validate a JSON alert export and return (entity rows, record rows).
+
+    Accepts either a top-level array of record objects, or an object wrapping one under
+    "records". Values are converted to text and handed to the CSV validator, so JSON and
+    CSV cannot diverge in what they accept: one vocabulary, one set of rules, one set of
+    error messages.
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise IngestError([f"Not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})."])
+
+    if isinstance(data, dict):
+        data = data.get("records", data.get("data", data))
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        raise IngestError([
+            "Expected a JSON array of alert records, or an object with a \"records\" array."
+        ])
+    if not data:
+        raise IngestError(["The file contains no records."])
+    if not all(isinstance(row, dict) for row in data):
+        raise IngestError(["Every item in the array must be an object with named fields."])
+
+    columns: list[str] = []
+    for row in data:
+        for key in row:
+            k = str(key).strip().lower()
+            if k not in columns:
+                columns.append(k)
+
+    # Round-trip through CSV so both formats share one validator. The alternative -- a
+    # second parser -- is a second set of rules that will eventually disagree with the
+    # first about what a valid file is.
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for row in data:
+        writer.writerow({
+            str(k).strip().lower(): ("" if v is None else
+                                     "true" if v is True else
+                                     "false" if v is False else str(v))
+            for k, v in row.items()
+        })
+    return parse_csv(buffer.getvalue())
+
+
+def parse(text: str, filename: str = "") -> tuple[list[tuple], list[tuple]]:
+    """Validate an upload, choosing the parser by extension then by content."""
+    if filename.lower().endswith(".json"):
+        return parse_json(text)
+    if filename.lower().endswith(".csv"):
+        return parse_csv(text)
+    # No usable extension: JSON announces itself in its first character.
+    return parse_json(text) if text.lstrip()[:1] in "[{" else parse_csv(text)
+
+
 def load(con, entities: list[tuple], records: list[tuple], label: str) -> tuple[int, int]:
     """Replace the current dataset with a parsed upload. Returns (entities, records)."""
     import db
@@ -281,3 +343,60 @@ def load(con, entities: list[tuple], records: list[tuple], label: str) -> tuple[
     db.set_dataset_meta(con, source="upload", label=label,
                         entity_count=len(entities), record_count=len(records))
     return len(entities), len(records)
+
+
+def _cli() -> int:
+    """Load a dataset from the command line.
+
+    Kept from the parallel implementation this merged with: loading a file without
+    starting the UI is genuinely useful, and it is how an operator seeds a machine
+    before a demo. It goes through the same validator as the upload endpoint, so a file
+    the CLI accepts is one the UI accepts and vice versa.
+    """
+    import argparse
+
+    import db
+    from detection import run_detection
+    from scoring import ranked_entities
+
+    parser = argparse.ArgumentParser(
+        description="Load a CSV or JSON alert export into SAT-SA and run detection."
+    )
+    parser.add_argument("file", help="Path to a .csv or .json alert export")
+    args = parser.parse_args()
+
+    try:
+        with open(args.file, "r", encoding="utf-8-sig") as fh:
+            text = fh.read()
+    except OSError as exc:
+        print(f"[-] Could not read {args.file}: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        entities, records = parse(text, args.file)
+    except IngestError as exc:
+        print(f"[-] {len(exc.errors)} problem(s) in {args.file} - nothing was loaded:",
+              file=sys.stderr)
+        for message in exc.errors:
+            print(f"      {message}", file=sys.stderr)
+        return 1
+
+    con = db.connect()
+    entity_count, record_count = load(con, entities, records,
+                                      os.path.basename(args.file))
+    findings = run_detection(con)
+
+    print(f"\n[+] Loaded {args.file}")
+    print(f"      entities: {entity_count}")
+    print(f"      records:  {record_count}")
+    print(f"      findings: {findings}\n")
+    print("Top supervisory attention:")
+    for rank, e in enumerate(ranked_entities(con)[:5], 1):
+        print(f"  {rank}. {e['entity_name']} ({e['entity_id']}) - "
+              f"score {e['risk_score']}, {e['finding_count']} findings")
+    con.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_cli())

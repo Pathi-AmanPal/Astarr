@@ -488,6 +488,44 @@ def main() -> int:
         check("all problems are reported in one pass", len(exc.errors) == 2,
               f"reported {len(exc.errors)}")
 
+    print("\nJSON ingestion shares the CSV validator")
+    # Two parsers would mean two definitions of a valid file, drifting apart. JSON is
+    # normalised into the CSV validator instead, and these checks are what hold that.
+    import json as _json
+
+    csv_entities, csv_records = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    header = ingest.TEMPLATE_CSV.strip().split("\n")[0].split(",")
+    as_objects = [
+        dict(zip(header, line.split(",")))
+        for line in ingest.TEMPLATE_CSV.strip().split("\n")[1:]
+    ]
+    json_entities, json_records = ingest.parse(_json.dumps(as_objects), "x.json")
+    check("the same data as JSON yields identical rows to CSV",
+          (json_entities, json_records) == (csv_entities, csv_records))
+
+    wrapped = ingest.parse(_json.dumps({"records": as_objects}), "x.json")
+    check('a {"records": [...]} wrapper is accepted', wrapped[1] == csv_records)
+
+    check("a JSON body is detected without a .json extension",
+          ingest.parse(_json.dumps(as_objects), "")[1] == csv_records)
+
+    def rejects_json(label: str, payload: str, expect: str) -> None:
+        try:
+            ingest.parse(payload, "x.json")
+        except ingest.IngestError as exc:
+            joined = " | ".join(exc.errors)
+            check(label, expect in joined, joined[:110])
+        else:
+            check(label, False, "accepted a payload it should have rejected")
+
+    rejects_json("malformed JSON is refused", "[{,}]", "Not valid JSON")
+    rejects_json("a JSON array of non-objects is refused", "[1, 2, 3]",
+                 "must be an object")
+    rejects_json("an empty JSON array is refused", "[]", "no records")
+    rejects_json("JSON with a bad severity is refused by the SAME rule as CSV",
+                 _json.dumps([{**as_objects[0], "severity": "EXTREME"}, as_objects[2]]),
+                 "severity 'EXTREME'")
+
     print("\nUploaded data runs the same pipeline as the seed")
     con3 = db.connect(os.path.join(tempfile.mkdtemp(), "verify3.duckdb"))
     up_entities, up_records = ingest.parse_csv(ingest.TEMPLATE_CSV)
