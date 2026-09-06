@@ -982,13 +982,18 @@ tbody tr:last-child td { border-bottom: 0; }
    Banners
    ========================================================================= */
 
+/* Notices sit above the screen's own content. The region carries the gap so a
+   banner never crowds the breadcrumb underneath it, and stacked banners keep an
+   even rhythm between themselves. */
+.notices:not(:empty) { margin-bottom: 24px; }
+.notices > * + * { margin-top: 10px; }
+
 .banner {
   display: flex;
   gap: 16px;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  margin-top: 16px;
   padding: 13px 16px;
   border: 1px solid var(--exception);
   border-left-width: 3px;
