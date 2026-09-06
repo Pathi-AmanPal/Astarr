@@ -577,80 +577,87 @@ All figures below are **measured**, not estimated — on the v1 pipeline, 2 vCPU
 Python 3.11, DuckDB. Reproduce with `scripts/bench.py`. They are the numbers to put in
 the Architecture Document and the "Infrastructure requirements" deliverable.
 
-### 12.1 Throughput, by dataset size (50 entities)
+### 12.1 Throughput, by dataset size
 
-| Records | Parse | Load | Detect | Score | **Total** | Peak RSS |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 10,000 | 0.07s | 0.30s | 1.18s | 0.01s | **1.6s** | 298 MiB |
-| 25,000 | 0.19s | 0.46s | 1.44s | 0.01s | **2.1s** | 324 MiB |
-| 50,000 | 0.38s | 0.61s | 1.84s | 0.01s | **2.8s** | 355 MiB |
-| 100,000 | 0.72s | 0.96s | 1.79s | 0.02s | **3.4s** | 420 MiB |
-| 1,000,000 | 12.3s | 6.1s | 10.9s | 0.05s | **29.8s** | 1,530 MiB |
+| Records | Entities | Ingest | Detect | **Total** | Peak RSS |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 20 | 0.61s | 1.88s | **2.5s** | 299 MiB |
+| 100,000 | 20 | 2.53s | 2.42s | **4.9s** | 343 MiB |
+| 100,000 | 2,000 | 4.34s | 7.90s | **12.3s** | 311 MiB |
+| 1,000,000 | 50 | 20.3s | 5.34s | **25.6s** | 504 MiB |
 
-### 12.2 Throughput, by entity count (100,000 records)
+### 12.2 What this replaced
 
-The axis the problem statement cares about — *"a growing number of CSEs"*.
+The v1 pipeline read every record into Python. Same hardware, same datasets:
 
-| Entities | Detect | Total |
-| ---: | ---: | ---: |
-| 20 | 1.79s | 3.40s |
-| 100 | 2.78s | 5.03s |
-| 500 | 5.09s | 6.92s |
-| 2,000 | 13.35s | 16.64s |
+| Records / entities | Before | After |
+| --- | --- | --- |
+| 100,000 / 20 | 5.7s · 438 MiB | **4.9s · 343 MiB** |
+| 100,000 / 2,000 | 30.2s · 427 MiB | **12.3s · 311 MiB** |
+| 1,000,000 / 50 | 37.7s · 1,530 MiB | **25.6s · 504 MiB** |
 
-### 12.3 Stated minimum specification
+Peak memory no longer tracks dataset size the way it did: the validation stage alone
+fell from 895 MiB to 143 MiB on a million rows.
+
+### 12.3 How it works — do not undo these
+
+**Ingestion streams.** `ingest.iter_validated_rows` is a generator accepting a string
+*or a file handle*; `stage_csv` writes each validated row straight to a staged CSV and
+`load_streaming` hands that to DuckDB in one statement. Three things were each costing a
+full copy of the dataset and are all gone: `io.StringIO(text)` duplicated the file, a
+second dict was built per row on top of `DictReader`'s, and the upload endpoint held the
+whole body as a Python string (it now spools to disk and reads back a handle).
+
+**Detection is set-based.** `rules_sql.py` expresses EG-001…005 and NS-002 as
+`INSERT ... SELECT`, so neither a record nor a finding ever becomes a Python object.
+NS-001 stays in Python deliberately — it reasons over one number per entity and its
+peer-cohort validity gate is a judgement SQL would obscure rather than accelerate.
+
+**`run_detection_python` is retained as the executable specification.** It is the
+definition of what the rules mean; the SQL engine is an optimisation of it. `verify.py`
+asserts the two produce byte-identical findings on every run. **If they ever disagree,
+the Python one is right.** Do not delete it to tidy up.
+
+### 12.4 Stated minimum specification
 
 > **2 vCPU · 2 GiB RAM · 1 GiB disk · no GPU · no network.** Runs on a standard
-> air-gapped Windows or Linux VM. One million alert records ingest, analyse and score
-> in approximately 30 seconds at a peak of 1.5 GiB.
+> air-gapped Windows or Linux VM. One million alert records ingest, analyse and score in
+> roughly 26 seconds at a peak of ~500 MiB; 100,000 records across 2,000 CSEs in 12
+> seconds at ~310 MiB.
 
-### 12.4 Other targets
+DuckDB's working memory can be bounded further with `SATSA_DB_MEMORY_LIMIT` and
+`SATSA_DB_THREADS`. Both are unset by default on purpose: DuckDB's own default adapts to
+the machine, and a fixed low limit is not free — 256MB holds peak RSS to 404 MiB on the
+million-row load, while **128MB fails outright** with an OutOfMemoryError inside EG-003's
+aggregation. Treat it as a deployment knob, not a default.
+
+### 12.5 Other targets
 
 | Requirement | Target |
 | --- | --- |
 | Cold start to interactive | < 2s |
-| Upload → recomputed dashboard | < 4s for 100k records |
+| Upload → recomputed dashboard | < 5s for 100k records |
 | Bundle size | < 500KB gzipped including Recharts |
 | Offline | Renders identically with the network off. Verified by disabling it |
 | Determinism | Same input file → byte-identical findings and scores, every run |
-| Browser | Current Chrome and Edge |
 | Concurrency | Every DB endpoint serialised (§6.1) |
 
-### 12.5 Known limits — state these, do not hide them
+### 12.6 Remaining limits
 
-**1. Memory bounds throughput, not time.** Roughly **1.5 KiB of resident memory per
-record** — 1.5 GiB for a million rows, against a 150 MiB source file. Two causes, both
-architectural:
+**1. Ingest is now the dominant cost** — 20 of the 26 seconds on a million rows. That is
+Python-level per-row validation, and it buys the line-numbered error messages the upload
+UX depends on (§4.4). Parallelising it across processes is the next lever, and it is not
+needed yet.
 
-- `ingest.parse_csv` materialises every row as a Python tuple before any of it is written
-- `detection._fetch_records` reads the whole table back as Python dicts
+**2. The ML layer scales with entity count, not record count.** Isolation Forest plus
+SHAP over a 2,000-row feature matrix is ~5s. Two O(n²) mistakes were already removed
+here — `_zscores` recomputed every column's mean and sigma once per row, and the profile
+insert used `executemany` — so what remains is the model itself. Beyond ~5,000 CSEs,
+consider fitting on a sample and scoring the full set.
 
-A 2 GiB machine therefore handles about a million records. **Do not "fix" this with a
-larger `MAX_ROWS`** — the cap is what stops the process being OOM-killed mid-analysis.
-
-**2. Parsing is 41% of the 1M run.** 12.3 of 29.8 seconds is Python-level CSV validation.
-That cost buys per-line error messages, which is a product requirement (§4.4) and worth
-paying at current scale. It is the next thing to optimise after memory.
-
-**3. Detection still grows with entity count**, 1.79s → 13.35s from 20 to 2,000 entities
-at fixed record volume. The O(records × entities) scans were removed (each rule now reads
-a pre-bucketed slice), but per-entity work remains genuinely per-entity.
-
-### 12.6 Roadmap: streaming ingestion
-
-The single change that lifts the ceiling. Not required for v2; required before anyone
-loads 10M records.
-
-- **Parse in chunks.** Validate and flush every N rows instead of building one list.
-  Keeps line-numbered errors; needs an all-or-nothing strategy (stage to a temp table,
-  swap on success) so a failure halfway still leaves the previous dataset intact.
-- **Push detection into SQL.** EG-001, EG-002 and EG-004 are row predicates and are
-  `WHERE` clauses. EG-003 and EG-005 are `GROUP BY … HAVING COUNT(*) >= n`. NS-001 is an
-  aggregate against a window. Only the ML layer needs rows in Python, and it already
-  operates on per-entity aggregates — a handful of rows regardless of dataset size.
-  This removes `_fetch_records` entirely, which is the larger of the two memory costs.
-- Expected result: memory flat in dataset size, bounded by DuckDB's own buffer pool
-  rather than by the Python heap.
+**3. Evidence lists for NS-001 and NS-002 are every record the entity filed.** At 20,000
+records per entity that is a ~260 KB string per finding. Correct, but it is why those
+two rules should never be given a per-category evidence list.
 
 ### 12.7 A product limit the numbers exposed
 
