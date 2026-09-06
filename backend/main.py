@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import os
+import tempfile
 import threading
 from contextlib import asynccontextmanager
 
@@ -352,8 +353,20 @@ async def dataset_upload(file: UploadFile = File(...)):
                     "details": []},
         )
 
+    label = os.path.basename(file.filename or "uploaded.csv")
+    # How the file's own column names were read onto the schema. Returned to the client
+    # and shown, always: a mapping the operator cannot see is a mapping they cannot
+    # correct, and a wrongly-read column produces findings that are confidently wrong.
+    mapping_notes: list[str] = []
+    is_json = (file.filename or "").lower().endswith(".json") or text.lstrip()[:1] in "[{"
     try:
-        entities, records = ingest.parse(text, file.filename or "")
+        if is_json:
+            # JSON is normalised through the CSV validator, which means it is
+            # materialised. Acceptable: a JSON submission is an interchange format for
+            # a review sample, not the million-row bulk path.
+            entities, records = ingest.parse_json(text, mapping_notes)
+        else:
+            entities, records = None, None
     except ingest.IngestError as exc:
         raise HTTPException(
             status_code=400,
@@ -363,13 +376,26 @@ async def dataset_upload(file: UploadFile = File(...)):
         )
 
     con = app.state.con
-    label = os.path.basename(file.filename or "uploaded.csv")
     # The lock is taken around the database work only, never across an await: this
     # endpoint runs on the event loop, and holding a blocking lock over a suspension
     # point would stall every other request rather than merely serialise this one.
     try:
         with _db_lock:
-            entities_loaded, records_loaded = ingest.load(con, entities, records, label)
+            if entities is None:
+                # CSV: validate and load without materialising the dataset. The body is
+                # spooled to disk first and read back as a handle, so neither the file
+                # nor the parsed rows are ever held whole in memory.
+                handle, spooled = tempfile.mkstemp(suffix=".csv", prefix="satsa-body-")
+                os.write(handle, raw)
+                os.close(handle)
+                try:
+                    with open(spooled, "r", encoding="utf-8-sig", newline="") as fh:
+                        entities_loaded, records_loaded = ingest.load_streaming(
+                            con, fh, label, mapping_notes)
+                finally:
+                    os.unlink(spooled)
+            else:
+                entities_loaded, records_loaded = ingest.load(con, entities, records, label)
             findings_generated = run_detection(con)
     except Exception as exc:
         # The dataset is now indeterminate; restore the demo rather than serve a
@@ -388,6 +414,7 @@ async def dataset_upload(file: UploadFile = File(...)):
         "entities_loaded": entities_loaded,
         "records_loaded": records_loaded,
         "findings_generated": findings_generated,
+        "mapping_notes": mapping_notes,
     }
 
 

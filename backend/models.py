@@ -137,6 +137,9 @@ class UploadResult(BaseModel):
     entities_loaded: int
     records_loaded: int
     findings_generated: int
+    # Every column the parser had to translate, and every one it ignored. Empty when
+    # the file already used the canonical names.
+    mapping_notes: list[str] = []
 
 
 class Health(BaseModel):
