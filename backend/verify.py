@@ -17,9 +17,13 @@ import tempfile
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+venv_site = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "Lib", "site-packages")
+if os.path.exists(venv_site) and venv_site not in sys.path:
+    sys.path.insert(0, venv_site)
 
 import db
 import ingest
+
 
 from detection import (NS001_MIN_COHORT_SIZE, NS001_STDDEV_MULTIPLIER, ns001,
                        ns002_min_reporting, run_detection)

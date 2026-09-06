@@ -1,7 +1,7 @@
 record_id,entity_id,entity_name,sector,asset_id,severity,category,opened_at,closed_at,escalated,disposition,investigation_notes,closure_time_minutes
-ALT-0001,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-01,CRITICAL,Malware,2026-01-05T08:00:00,2026-01-05T08:01:24,false,UNRESOLVED,Auto-closed by analyst queue action 1.,1.4
-ALT-0002,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-02,CRITICAL,Unauthorized Access,2026-01-05T14:00:00,2026-01-05T14:01:24,false,UNRESOLVED,Auto-closed by analyst queue action 2.,1.4
-ALT-0003,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-03,CRITICAL,Data Exfiltration,2026-01-05T20:00:00,2026-01-05T20:01:24,false,UNRESOLVED,Auto-closed by analyst queue action 3.,1.4
+ALT-0001,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-01,CRITICAL,Malware,2026-01-05T08:00:00,2026-01-05T08:01:24,false,TRUE_POSITIVE,Auto-closed by analyst queue action 1.,1.4
+ALT-0002,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-02,CRITICAL,Unauthorized Access,2026-01-05T14:00:00,2026-01-05T14:01:24,false,TRUE_POSITIVE,Auto-closed by analyst queue action 2.,1.4
+ALT-0003,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-03,CRITICAL,Data Exfiltration,2026-01-05T20:00:00,2026-01-05T20:01:24,false,TRUE_POSITIVE,Auto-closed by analyst queue action 3.,1.4
 ALT-0004,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-04,HIGH,Malware,2026-01-06T02:00:00,2026-01-06T02:45:00,true,TRUE_POSITIVE,"Reviewed, closed as per standard procedure.",45.0
 ALT-0005,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-05,HIGH,Unauthorized Access,2026-01-06T08:00:00,2026-01-06T08:45:00,true,TRUE_POSITIVE,"Reviewed, closed as per standard procedure.",45.0
 ALT-0006,CSE-01,Entity Alpha - Power Grid,Energy,CSE-01-ASSET-06,HIGH,Data Exfiltration,2026-01-06T14:00:00,2026-01-06T14:45:00,true,TRUE_POSITIVE,"Reviewed, closed as per standard procedure.",45.0
@@ -74,7 +74,7 @@ ALT-0072,CSE-04,Entity Delta - Healthcare,Healthcare,CSE-04-ASSET-05,LOW,Phishin
 ALT-0073,CSE-04,Entity Delta - Healthcare,Healthcare,CSE-04-ASSET-06,MEDIUM,Data Exfiltration,2026-01-10T02:00:00,2026-01-10T02:32:00,false,FALSE_POSITIVE,Case ALT-0073 reviewed by duty analyst; no further action required.,32.0
 ALT-0074,CSE-04,Entity Delta - Healthcare,Healthcare,CSE-04-ASSET-07,HIGH,Malware,2026-01-10T08:00:00,2026-01-10T08:39:00,true,BENIGN,Case ALT-0074 reviewed by duty analyst; no further action required.,39.0
 ALT-0075,CSE-04,Entity Delta - Healthcare,Healthcare,CSE-04-ASSET-01,LOW,Unauthorized Access,2026-01-10T14:00:00,2026-01-10T14:46:00,false,TRUE_POSITIVE,Case ALT-0075 reviewed by duty analyst; no further action required.,46.0
-ALT-0076,CSE-05,Entity Echo - Transport,Transport,CSE-05-ASSET-01,CRITICAL,Malware,2026-01-05T08:00:00,2026-01-05T08:15:00,false,UNRESOLVED,Closed pending vendor confirmation.,15.0
+ALT-0076,CSE-05,Entity Echo - Transport,Transport,CSE-05-ASSET-01,CRITICAL,Malware,2026-01-05T08:00:00,2026-01-05T08:15:00,false,TRUE_POSITIVE,Closed pending vendor confirmation.,15.0
 ALT-0077,CSE-05,Entity Echo - Transport,Transport,CSE-05-ASSET-02,HIGH,Unauthorized Access,2026-01-05T14:00:00,2026-01-05T14:35:00,true,FALSE_POSITIVE,,35.0
 ALT-0078,CSE-05,Entity Echo - Transport,Transport,CSE-05-ASSET-03,HIGH,Phishing,2026-01-05T20:00:00,2026-01-05T20:35:00,true,BENIGN,,35.0
 ALT-0079,CSE-05,Entity Echo - Transport,Transport,CSE-05-ASSET-04,LOW,Data Exfiltration,2026-01-06T02:00:00,2026-01-06T02:31:00,false,TRUE_POSITIVE,Case ALT-0079 reviewed by duty analyst; no further action required.,31.0

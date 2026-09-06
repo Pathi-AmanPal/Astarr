@@ -109,7 +109,7 @@ def _eg001_eg002(record_id: str, entity_id: str, name: str, sector: str, index: 
         opened_at=opened_at,
         closed_at=opened_at + timedelta(seconds=84),
         escalated=False,
-        disposition="UNRESOLVED",
+        disposition="TRUE_POSITIVE",
         notes=f"Auto-closed by analyst queue action {index + 1}.",
     )
 
@@ -122,9 +122,10 @@ def _eg002_only(record_id: str, entity_id: str, name: str, sector: str, index: i
         opened_at=opened_at,
         closed_at=opened_at + timedelta(minutes=15),
         escalated=False,
-        disposition="UNRESOLVED",
+        disposition="TRUE_POSITIVE",
         notes="Closed pending vendor confirmation.",
     )
+
 
 def _eg003(record_id: str, entity_id: str, name: str, sector: str, index: int, category: str) -> dict:
     opened_at = ANCHOR + timedelta(hours=6 * index)
