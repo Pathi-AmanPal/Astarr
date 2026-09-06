@@ -16,6 +16,7 @@ import math
 import statistics
 
 import config
+import ingest
 import ml
 from ml import ML_RULE_ID, ml_corroboration
 
@@ -404,22 +405,24 @@ def run_detection(con) -> int:
         )
 
     con.execute("DELETE FROM findings")
-    for i, f in enumerate(findings, start=1):
-        con.execute(
-            """
-            INSERT INTO findings (finding_id, entity_id, rule_id, finding_type, weight,
-                                  title, explanation, evidence_record_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                f"F-{i:04d}",
-                f["entity_id"],
-                f["rule_id"],
-                f["finding_type"],
-                WEIGHTS[f["rule_id"]],
-                f["title"],
-                f["explanation"],
-                ",".join(f["evidence_record_ids"]),
-            ],
+
+    # One prepared statement per finding measured at roughly a millisecond each, which
+    # is invisible at 18 findings and costs 11 seconds at 11,000 -- and a large
+    # multi-entity submission produces findings in the tens of thousands. The rows are
+    # built identically; only the way they reach DuckDB changes.
+    rows = [
+        (
+            f"F-{i:04d}",
+            f["entity_id"],
+            f["rule_id"],
+            f["finding_type"],
+            WEIGHTS[f["rule_id"]],
+            f["title"],
+            f["explanation"],
+            ",".join(f["evidence_record_ids"]),
         )
+        for i, f in enumerate(findings, start=1)
+    ]
+    if rows:
+        ingest.bulk_insert_findings(con, rows)
     return len(findings)

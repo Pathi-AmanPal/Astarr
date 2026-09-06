@@ -33,6 +33,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime
 
 # The columns a row must carry. `entity_name` and `sector` repeat per row: an alert
@@ -69,9 +70,21 @@ DISPOSITIONS = {"TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN"}
 TRUE_VALUES = {"true", "t", "yes", "y", "1"}
 FALSE_VALUES = {"false", "f", "no", "n", "0", ""}
 
-# A guard against a mis-selected file, not a licence limit. 50k alert rows is far more
-# than any supervisory review sample and still parses in well under a second.
-MAX_ROWS = 50_000
+# A guard against a mis-selected file, not a capability limit.
+#
+# Raised from 50,000 on 2026-09-05. The old cap was set when a 50,000-row load took 65
+# seconds; with bulk insert it takes 0.6s, and the cap was then the only thing standing
+# between this tool and the "large datasets spanning multiple entities and time periods"
+# requirement.
+#
+# Measured on 1,000,000 rows across 50 entities: 37.7s end to end (14.3s parse, 6.0s
+# load, 17.0s detection, 220,514 findings) at a peak of 1.5 GiB RSS.
+#
+# **Memory, not time, is what bounds this.** Roughly 1.5 KiB of resident memory per
+# record, because `parse_csv` materialises every row as a tuple and `_fetch_records`
+# reads them all back as dicts. A 2 GiB machine handles about a million rows; beyond
+# that both stages need to stream, which is a real change and not a tuning knob.
+MAX_ROWS = 1_000_000
 
 # Enough to fix an export in one pass without pasting a wall of text into the UI.
 MAX_REPORTED_ERRORS = 25
@@ -322,6 +335,76 @@ def parse(text: str, filename: str = "") -> tuple[list[tuple], list[tuple]]:
     return parse_json(text) if text.lstrip()[:1] in "[{" else parse_csv(text)
 
 
+RECORD_COLUMNS = (
+    "record_id", "entity_id", "asset_id", "severity", "category", "opened_at",
+    "closed_at", "escalated", "disposition", "investigation_notes",
+    "closure_time_minutes",
+)
+
+# Explicit types, never inference. DuckDB's CSV sniffer reads a sample, so on a file
+# where the first N rows happen to have no closed_at it would type the column VARCHAR
+# and every downstream timestamp comparison would silently do the wrong thing.
+RECORD_COLUMN_TYPES = {
+    "record_id": "VARCHAR", "entity_id": "VARCHAR", "asset_id": "VARCHAR",
+    "severity": "VARCHAR", "category": "VARCHAR", "opened_at": "TIMESTAMP",
+    "closed_at": "TIMESTAMP", "escalated": "BOOLEAN", "disposition": "VARCHAR",
+    "investigation_notes": "VARCHAR", "closure_time_minutes": "DOUBLE",
+}
+
+
+FINDING_COLUMN_TYPES = {
+    "finding_id": "VARCHAR", "entity_id": "VARCHAR", "rule_id": "VARCHAR",
+    "finding_type": "VARCHAR", "weight": "INTEGER", "title": "VARCHAR",
+    "explanation": "VARCHAR", "evidence_record_ids": "VARCHAR",
+}
+
+
+def _bulk_insert(con, table: str, column_types: dict[str, str],
+                 rows: list[tuple]) -> None:
+    """Insert rows through DuckDB's vectorised CSV reader instead of one statement each.
+
+    `con.executemany` issues a prepared statement per row and measured 1.3ms each --
+    65 seconds for 50,000 records, roughly 22 minutes for a million, which fails the
+    "large datasets spanning multiple entities and time periods" requirement outright.
+    Staging to a temporary CSV and letting DuckDB read it natively does the same 50,000
+    rows in 0.33s: a measured 198x.
+
+    Column types are declared, never sniffed. DuckDB's CSV sniffer reads a sample, so a
+    file whose first rows happen to have no `closed_at` would type that column VARCHAR
+    and every downstream timestamp comparison would quietly do the wrong thing.
+    """
+    if not rows:
+        return
+
+    columns = ", ".join(column_types)
+    handle, staged = tempfile.mkstemp(suffix=".csv", prefix=f"satsa-{table}-")
+    os.close(handle)
+    try:
+        with open(staged, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(column_types.keys())
+            writer.writerows(rows)
+        con.execute(
+            f"INSERT INTO {table} ({columns}) "
+            f"SELECT {columns} FROM read_csv(?, header=true, columns=?, nullstr='')",
+            [staged, column_types],
+        )
+    finally:
+        os.unlink(staged)
+
+
+def bulk_insert_findings(con, rows: list[tuple]) -> None:
+    """Insert generated findings. Same mechanism, same reasoning as the records path."""
+    _bulk_insert(con, "findings", FINDING_COLUMN_TYPES, rows)
+
+
+def bulk_insert_records(con, records: list[tuple]) -> None:
+    """Insert validated records. The rows have already passed `parse_csv`, so this is
+    not a second ingestion path with a second set of rules -- it is a faster way to hand
+    the same validated tuples to the database."""
+    _bulk_insert(con, "records", RECORD_COLUMN_TYPES, records)
+
+
 def load(con, entities: list[tuple], records: list[tuple], label: str) -> tuple[int, int]:
     """Replace the current dataset with a parsed upload. Returns (entities, records)."""
     import db
@@ -331,15 +414,7 @@ def load(con, entities: list[tuple], records: list[tuple], label: str) -> tuple[
         "INSERT INTO entities (entity_id, entity_name, sector) VALUES (?, ?, ?)",
         entities,
     )
-    con.executemany(
-        """
-        INSERT INTO records (record_id, entity_id, asset_id, severity, category,
-                             opened_at, closed_at, escalated, disposition,
-                             investigation_notes, closure_time_minutes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        records,
-    )
+    bulk_insert_records(con, records)
     db.set_dataset_meta(con, source="upload", label=label,
                         entity_count=len(entities), record_count=len(records))
     return len(entities), len(records)

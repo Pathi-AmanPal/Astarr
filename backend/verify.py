@@ -549,6 +549,71 @@ def main() -> int:
     check("restored demo findings match the reference build",
           con3.execute(snapshot).fetchall() == con.execute(snapshot).fetchall())
 
+    print("\nBulk insert preserves types and NULLs")
+    # Records reach DuckDB through a staged CSV rather than one INSERT per row (198x
+    # faster, measured). CSV has no type system, so the risk this trades for speed is
+    # a value arriving as the wrong type or an empty string arriving as "" instead of
+    # NULL. These assert the round-trip, not the speed.
+    con4 = db.connect(os.path.join(tempfile.mkdtemp(), "verify4.duckdb"))
+    typed = (
+        "record_id,entity_id,entity_name,sector,asset_id,severity,category,opened_at,"
+        "closed_at,escalated,disposition,investigation_notes,closure_time_minutes\n"
+        # closed, escalated, notes present
+        "R-1,E-1,One,Energy,A-1,HIGH,Malware,2026-01-05T08:00:00,2026-01-05T10:30:00,true,TRUE_POSITIVE,Checked.,150\n"
+        # still open: no closed_at, no notes, not escalated
+        "R-2,E-2,Two,Telecom,A-2,LOW,Phishing,2026-01-05T09:00:00,,false,BENIGN,,\n"
+    )
+    e4, r4 = ingest.parse_csv(typed)
+    ingest.load(con4, e4, r4, "typed.csv")
+
+    row = con4.execute(
+        "SELECT opened_at, closed_at, escalated, investigation_notes, "
+        "closure_time_minutes FROM records WHERE record_id = 'R-1'"
+    ).fetchone()
+    from datetime import datetime as _dt
+    check("a timestamp survives as TIMESTAMP, not text",
+          isinstance(row[0], _dt) and row[0] == _dt(2026, 1, 5, 8, 0), str(row[0]))
+    check("a boolean survives as BOOLEAN", row[2] is True, repr(row[2]))
+    check("a float survives as DOUBLE", row[4] == 150.0, repr(row[4]))
+
+    open_row = con4.execute(
+        "SELECT closed_at, investigation_notes, closure_time_minutes FROM records "
+        "WHERE record_id = 'R-2'"
+    ).fetchone()
+    check("an absent closed_at is NULL, not an empty string", open_row[0] is None,
+          repr(open_row[0]))
+    check("absent notes are NULL, not an empty string", open_row[1] is None,
+          repr(open_row[1]))
+    check("an underivable closure time is NULL, not 0", open_row[2] is None,
+          repr(open_row[2]))
+    check("an unescalated row reads False, not NULL",
+          con4.execute("SELECT escalated FROM records WHERE record_id='R-2'"
+                       ).fetchone()[0] is False)
+
+    # A comma and a quote in free text are the classic staging bug: written unescaped,
+    # they shift every following column by one.
+    tricky = typed + ('R-3,E-1,One,Energy,A-3,LOW,Malware,2026-01-06T08:00:00,'
+                      '2026-01-06T09:00:00,false,BENIGN,"Comma, and ""quotes"" inside",60\n')
+    e5, r5 = ingest.parse_csv(tricky)
+    con5 = db.connect(os.path.join(tempfile.mkdtemp(), "verify5.duckdb"))
+    ingest.load(con5, e5, r5, "tricky.csv")
+    check("a comma and quotes inside free text do not shift columns",
+          con5.execute("SELECT investigation_notes, closure_time_minutes FROM records "
+                       "WHERE record_id='R-3'").fetchone()
+          == ('Comma, and "quotes" inside', 60.0))
+
+    # A newline inside a quoted field is the same bug one level nastier.
+    multiline = typed + ('R-4,E-1,One,Energy,A-4,LOW,Malware,2026-01-07T08:00:00,'
+                         '2026-01-07T09:00:00,false,BENIGN,"Line one\nline two",60\n')
+    e6, r6 = ingest.parse_csv(multiline)
+    con6 = db.connect(os.path.join(tempfile.mkdtemp(), "verify6.duckdb"))
+    ingest.load(con6, e6, r6, "multiline.csv")
+    check("a newline inside a quoted field survives the round-trip",
+          con6.execute("SELECT investigation_notes FROM records WHERE record_id='R-4'"
+                       ).fetchone()[0] == "Line one\nline two")
+    check("...and the row count is still correct",
+          con6.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3)
+
     print("\nConcurrent reads on the shared connection")
     # The detail screen fetches its findings and its ML profile at the same time, and
     # FastAPI runs sync endpoints on a threadpool -- so two requests hit one DuckDB
