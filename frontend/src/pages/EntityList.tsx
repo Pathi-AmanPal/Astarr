@@ -1,61 +1,43 @@
-/** Screen 1 — the schedule. Entities ranked by risk, footed like an audit column.
-    The leftmost column is the working-paper reference: this sheet is an index,
-    and every row points at the schedule that proves its figure. */
+/** Screen 1 — the ranking.
+ *
+ *  Forty entities, one score each, and the supervisor's question is "who first?".
+ *  That makes this a comparison screen before it is a list, so every row carries
+ *  the same three things in the same place: a figure that aligns on its digits, a
+ *  bar drawn against the attainable maximum rather than against the row above it,
+ *  and a written band. Colour reinforces the band; it never carries it alone.
+ */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import {
-  ApiError,
-  DatasetInfo,
-  EntitySummary,
-  TEMPLATE_URL,
-  getDataset,
-  getEntities,
-  resetDemo,
-  uploadDataset,
-} from "../api";
+import { ApiError, EntitySummary, getEntities } from "../api";
+import Composition, { CompositionLegend } from "../components/Composition";
+import { useDataset } from "../components/Shell";
 import { Loading, ErrorState } from "../components/States";
-import { WORKPAPER_ID, entityRef, formatScore } from "../workpaper";
+import { ATTAINABLE_MAX, entityRef, formatScore } from "../workpaper";
 
-/** Severity edge mark. The field stays achromatic; only this edge carries colour. */
 /* Band thresholds for the weighted-tier scale (PRD Section 5 amendment).
-   These were 60 and 30 on the Phase 1 additive 0-100 scale. They are NOT a naive
-   rescale: the old score conflated tiers, so a 40 earned from Negative Space and a 40
-   earned from Execution Gap looked identical, and weighting now separates them. 50/10
-   is the pair that preserves the existing three-band grouping exactly -- CSE-01 alone
-   in exception, CSE-05/CSE-03/CSE-02 in caution, CSE-06 and the zero-scoring entities
-   clear -- so no entity silently changes colour as a side effect of the formula change.
+   These were 60 and 30 on the Phase 1 additive scale. They are NOT a rescale: the
+   old score conflated tiers, so 40 earned from Negative Space and 40 earned from
+   Execution Gap looked identical, and weighting now separates them. 50/10 is the
+   pair that preserves the previous three-band grouping exactly, so no entity
+   silently changes band as a side effect of the formula change.
 
-   Chosen to preserve intent rather than derived from first principles: banding is a
-   supervisory judgement, not arithmetic, and is worth a deliberate review. Note the
-   attainable maximum is 86.5, not 100 (the ML tier cannot exceed 10). */
+   Banding is a supervisory judgement, not arithmetic. */
 const BAND_EXCEPTION = 50;
 const BAND_CAUTION = 10;
 
-function edgeClass(score: number): string {
-  if (score > BAND_EXCEPTION) return "edge-exception";
-  if (score >= BAND_CAUTION) return "edge-caution";
-  return "edge-clear";
+function band(score: number): { key: string; label: string } {
+  if (score > BAND_EXCEPTION) return { key: "exception", label: "exception" };
+  if (score >= BAND_CAUTION) return { key: "caution", label: "caution" };
+  return { key: "clear", label: "clear" };
 }
 
 export default function EntityList() {
   const navigate = useNavigate();
+  const { version, openPicker } = useDataset();
   const [entities, setEntities] = useState<EntitySummary[] | null>(null);
-  const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [resetting, setResetting] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  // A rejected upload reports every problem at once; the banner lists them rather
-  // than making the user re-upload to discover the next one.
-  const [uploadError, setUploadError] = useState<{ message: string; details: string[] } | null>(null);
-  // An accepted upload whose columns had to be translated. Shown, not swallowed: the
-  // operator is the only one who can tell us we read 'status' as the wrong field.
-  const [mappingNotes, setMappingNotes] = useState<string[]>([]);
-  const fileInput = useRef<HTMLInputElement>(null);
-
-  const busy = resetting || uploading;
 
   const load = useCallback(async () => {
     setError(null);
@@ -65,280 +47,192 @@ export default function EntityList() {
       setEntities(null);
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
     }
-    // Provenance is secondary: a schedule that loads while /api/dataset fails should
-    // still render, captioned with the demo default rather than not at all.
-    try {
-      setDataset(await getDataset());
-    } catch {
-      setDataset(null);
-    }
   }, []);
 
-  async function onFileChosen(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    // Clear immediately so re-picking the same file after a fix still fires onChange.
-    event.target.value = "";
-    if (!file) return;
-
-    setUploading(true);
-    setUploadError(null);
-    setResetError(null);
-    setMappingNotes([]);
-    try {
-      const result = await uploadDataset(file);
-      setMappingNotes(result.mapping_notes ?? []);
-      await load();
-    } catch (e) {
-      const err = e instanceof ApiError ? e : null;
-      setUploadError({
-        message: err?.message ?? "Upload failed.",
-        details: err?.details ?? [],
-      });
-    } finally {
-      setUploading(false);
-    }
-  }
-
+  // `version` bumps when the shell loads a new dataset, from any screen.
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, version]);
 
-  async function onReset() {
-    setResetting(true);
-    setResetError(null);
-    try {
-      await resetDemo();
-      await load();
-    } catch (e) {
-      // The page stays usable: the old list remains on screen behind the banner.
-      setResetError(e instanceof ApiError ? e.message : "Reset failed.");
-    } finally {
-      setResetting(false);
-    }
-  }
-
-  const totalAlerts = entities?.reduce((n, e) => n + e.record_count, 0) ?? 0;
-  const totalFindings = entities?.reduce((n, e) => n + e.finding_count, 0) ?? 0;
+  const total = entities?.length ?? 0;
+  const alerts = entities?.reduce((n, e) => n + e.record_count, 0) ?? 0;
+  const findings = entities?.reduce((n, e) => n + e.finding_count, 0) ?? 0;
+  const flagged = entities?.filter((e) => e.finding_count > 0).length ?? 0;
+  const sectors = new Set(entities?.map((e) => e.sector)).size;
+  const top = entities?.[0]?.risk_score ?? 0;
 
   return (
     <>
-      <div className="masthead">
+      <div className="head">
         <div>
-          <h1 className="masthead__title">SAT-SA — Supervisory Analytics</h1>
-          <p className="masthead__sub">
-            Supervisory Analytics Tool for SOC Assessment
+          <h1 className="hd">Supervisory ranking</h1>
+          <p className="hd__sub">
+            Every entity in the loaded dataset, ordered by supervisory risk. The
+            score is a comparable scale, not a percentage — follow any row to the
+            findings that produce its figure, and from there to the alert records
+            those findings were computed from.
           </p>
-          <p className="masthead__ref">
-            <span>Working Paper {WORKPAPER_ID}</span>
-            {/* Provenance, not decoration: a schedule computed over an uploaded export
-                must never be mistaken for one computed over the demo dataset. */}
-            <span>
-              {dataset
-                ? dataset.source === "upload"
-                  ? `Source: ${dataset.label}`
-                  : "Synthetic demo dataset"
-                : "Synthetic demo dataset"}
-            </span>
-            <span>Prepared for NCIIPC Supervisory Review</span>
-          </p>
-        </div>
-
-        <div className="masthead__actions">
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".csv,.json,text/csv,application/json"
-            className="sr-only"
-            onChange={onFileChosen}
-          />
-          <button
-            type="button"
-            className="btn"
-            onClick={() => fileInput.current?.click()}
-            disabled={busy}
-          >
-            {uploading ? "Loading…" : "Upload CSV / JSON"}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={onReset}
-            disabled={busy}
-          >
-            {resetting ? "Resetting…" : "Reset Demo Data"}
-          </button>
         </div>
       </div>
 
-      {entities && (
-        <dl className="summary">
-          <div className="summary__cell">
-            <dt className="summary__label">Entities</dt>
-            <dd className="summary__n">{entities.length}</dd>
-          </div>
-          <div className="summary__cell">
-            <dt className="summary__label">Alerts analysed</dt>
-            <dd className="summary__n">{totalAlerts}</dd>
-          </div>
-          <div className="summary__cell">
-            <dt className="summary__label">Findings raised</dt>
-            <dd className="summary__n">{totalFindings}</dd>
-          </div>
-        </dl>
-      )}
-
-      {resetError && (
-        <div className="banner" role="alert">
-          <span>{resetError}</span>
-          <button type="button" className="btn" onClick={onReset} disabled={busy}>
-            Retry
-          </button>
-        </div>
-      )}
-
-      {mappingNotes.length > 0 && (
-        <div className="banner banner--stack banner--info" role="status">
-          <div className="banner__head">
-            <span>
-              Loaded. This file did not use the standard column names, so it was read
-              as follows — check it before trusting the schedule.
+      {entities && entities.length > 0 && (
+        <section className="stats" aria-label="Dataset summary">
+          <div className="stat">
+            <span className="lbl">Entities under review</span>
+            <span className="stat__value">{total}</span>
+            <span className="stat__sub">
+              across <b>{sectors}</b> {sectors === 1 ? "sector" : "sectors"} ·{" "}
+              <b>{total - flagged}</b> with no findings
             </span>
-            <button type="button" className="btn" onClick={() => setMappingNotes([])}>
-              Dismiss
-            </button>
           </div>
-          <ul className="banner__list">
-            {mappingNotes.map((n) => (
-              <li key={n}>{n}</li>
-            ))}
-          </ul>
-        </div>
+          <div className="stat">
+            <span className="lbl">Alerts analysed</span>
+            <span className="stat__value">{alerts.toLocaleString()}</span>
+            <span className="stat__sub">
+              <b>{total ? Math.round(alerts / total).toLocaleString() : 0}</b> per
+              entity on average
+            </span>
+          </div>
+          <div className="stat">
+            <span className="lbl">Findings raised</span>
+            <span className="stat__value">{findings.toLocaleString()}</span>
+            <span className="stat__sub">
+              on <b>{flagged}</b> of {total} entities
+            </span>
+          </div>
+          <div className="stat">
+            <span className="lbl">Highest score</span>
+            <span className="stat__value">{formatScore(top)}</span>
+            <span className="stat__sub">
+              of <b>{ATTAINABLE_MAX}</b> attainable
+            </span>
+          </div>
+        </section>
       )}
 
-      {uploadError && (
-        <div className="banner banner--stack" role="alert">
-          <div className="banner__head">
-            <span>{uploadError.message}</span>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setUploadError(null)}
-            >
-              Dismiss
-            </button>
-          </div>
-          {uploadError.details.length > 0 && (
-            <ul className="banner__list">
-              {uploadError.details.map((d) => (
-                <li key={d}>{d}</li>
-              ))}
-            </ul>
-          )}
-          <p className="banner__note">
-            Required fields: record_id, entity_id, entity_name, sector, asset_id,
-            severity, category, opened_at, disposition — plus optional closed_at,
-            escalated, investigation_notes, closure_time_minutes. Your export need not
-            use these exact names: common spellings (alert_id, org_id, priority,
-            created_at, resolution, TTR…) are recognised and the translation is shown
-            to you after loading.{" "}
-            <a className="btn--link" href={TEMPLATE_URL}>
-              Download a template
-            </a>
-            .
-          </p>
-        </div>
-      )}
+      <div className="sect">
+        <h2 className="sect__title">Entities requiring supervisory attention</h2>
+        {entities && <span className="sect__n">{total} rows</span>}
+      </div>
 
-      <h2 className="section-title">Entities Requiring Supervisory Attention</h2>
-      <p className="section-note">
-        Ranked by supervisory risk score, highest first. Every score is the sum of the
-        findings on that entity’s schedule — follow its reference to see them.
-      </p>
-
-      {!entities && !error && <Loading rows={8} label="Loading entities" />}
+      {!entities && !error && <Loading rows={8} label="Loading the ranking" />}
 
       {error && <ErrorState message={error} onRetry={() => void load()} />}
 
-      {entities && (
-        <div className="sheet">
-          <table className="schedule">
-            <thead>
-              <tr>
-                <th className="col-ref" scope="col">W/P</th>
-                <th className="col-rank" scope="col">Rank</th>
-                <th className="col-entity" scope="col">Entity</th>
-                <th className="col-alerts" scope="col">Alerts</th>
-                <th className="col-findings" scope="col">Findings</th>
-                <th className="col-score" scope="col">Risk score</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entities.map((e, i) => (
-                <tr
-                  key={e.entity_id}
-                  onClick={() => navigate(`/entities/${e.entity_id}`)}
-                >
-                  <td className="col-ref">
-                    <span className="cell wp-ref">{entityRef(e.entity_id)}</span>
-                  </td>
-                  <td className="col-rank">
-                    <span className="cell num rank">{i + 1}</span>
-                  </td>
-                  <td>
-                    <span className="cell">
-                      <span className="tickmark" aria-hidden="true" />
-                      <a
-                        className="entity-name"
-                        href={`/entities/${e.entity_id}`}
-                        onClick={(ev) => {
-                          ev.preventDefault();
-                          ev.stopPropagation();
-                          navigate(`/entities/${e.entity_id}`);
-                        }}
-                      >
-                        {e.entity_name}
-                      </a>
-                      <span className="entity-id">{e.entity_id}</span>
-                      <span className="entity-sector">{e.sector}</span>
-                    </span>
-                  </td>
-                  <td className="col-alerts">
-                    <span className="cell num">{e.record_count}</span>
-                  </td>
-                  <td className="col-findings">
-                    <span className="cell num">
-                      {e.finding_count === 0 ? (
-                        <>
-                          <span className="tick-clean" aria-hidden="true" />
-                          <span className="sr-only">No findings — clean</span>
-                        </>
-                      ) : (
-                        e.finding_count
-                      )}
-                    </span>
-                  </td>
-                  <td className="col-score">
-                    <span className={`score-cell ${edgeClass(e.risk_score)}`}>
-                      {/* A zero score is graphite-faint, per DESIGN.md. Without this the
-                          eight clean entities render at full ink and a schedule whose
-                          result is "one exception" reads as a wall of heavy zeros. */}
-                      <span
-                        className={`score-value${e.risk_score === 0 ? " zero" : ""}`}
-                      >
-                        {formatScore(e.risk_score)}
-                      </span>
-                      {/* NOT "Maximum": under weighted tiers a capped tier does not
-                          mean a maximum score. CSE-01 caps its Execution Gap tier at
-                          100 and still scores 56.50, and labelling that "Maximum" on
-                          the ranking screen would be plainly false. */}
-                      {e.capped && <span className="score-max">Tier capped</span>}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {entities && entities.length === 0 && (
+        <div className="empty-screen">
+          <h2 className="empty-screen__title">No dataset loaded</h2>
+          <p className="empty-screen__body">
+            This tool ships with no data of its own. Load a SOC alert export — CSV
+            or JSON — and it will validate every row, run the eight supervisory
+            rules across the entities it finds, and rank them. Your export does not
+            need this tool's column names; common spellings are recognised and the
+            translation is reported back to you.
+          </p>
+          <div className="empty-screen__actions">
+            <button type="button" className="btn btn--primary" onClick={openPicker}>
+              Load alert export
+            </button>
+          </div>
         </div>
+      )}
+
+      {entities && entities.length > 0 && (
+        <>
+          <div className="sheet">
+            <table className="rank">
+              <caption className="sr-only">
+                Entities ranked by supervisory risk score, highest first. Each row
+                gives the alert count, finding count, the score's composition by
+                tier, and the score with its supervisory band.
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col" className="c-rank">#</th>
+                  <th scope="col">Entity</th>
+                  <th scope="col" className="c-n n">Alerts</th>
+                  <th scope="col" className="c-n n">Findings</th>
+                  <th scope="col" className="c-comp">Composition</th>
+                  <th scope="col" className="c-score n">Risk score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entities.map((e, i) => {
+                  const b = band(e.risk_score);
+                  return (
+                    <tr
+                      key={e.entity_id}
+                      style={{ "--i": Math.min(i, 8) } as React.CSSProperties}
+                      onClick={() => navigate(`/entities/${e.entity_id}`)}
+                    >
+                      <td className="c-rank">
+                        <span className="rank__n">
+                          {String(i + 1).padStart(2, "0")}
+                        </span>
+                      </td>
+                      <td>
+                        <a
+                          className="ent__name"
+                          href={`/entities/${e.entity_id}`}
+                          onClick={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            navigate(`/entities/${e.entity_id}`);
+                          }}
+                        >
+                          {e.entity_name}
+                        </a>
+                        <span className="ent__meta">
+                          <span className="mono">{e.entity_id}</span>
+                          <i aria-hidden="true">·</i>
+                          {e.sector}
+                          <i aria-hidden="true">·</i>
+                          <span className="mono">{entityRef(e.entity_id)}</span>
+                        </span>
+                      </td>
+                      <td className="c-n">
+                        <span className="num">
+                          {e.record_count.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="c-n">
+                        {e.finding_count === 0 ? (
+                          <span className="none">none</span>
+                        ) : (
+                          <span className="num">{e.finding_count}</span>
+                        )}
+                      </td>
+                      <td className="c-comp">
+                        <Composition tiers={e.tiers} />
+                      </td>
+                      <td className="c-score">
+                        <span
+                          className={`score${e.risk_score === 0 ? " score--zero" : ""}`}
+                        >
+                          {formatScore(e.risk_score)}
+                        </span>
+                        {/* NOT "maximum": under weighted tiers a capped tier does
+                            not mean a maximum score. An entity can cap its
+                            Execution Gap tier and still score 56.50. */}
+                        {/* The denominator stays on every row. A capped tier
+                            does NOT mean a maximum score — an entity can cap its
+                            execution-gap tier and still score 56.50 — so the cap
+                            is noted beside the scale, never in place of it. */}
+                        <span className="score__of">
+                          of {ATTAINABLE_MAX}
+                          {e.capped && " · capped"}
+                        </span>
+                        <span className={`chip chip--${b.key}`}>{b.label}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <CompositionLegend note="Bars are drawn to the same scale on every row." />
+        </>
       )}
     </>
   );

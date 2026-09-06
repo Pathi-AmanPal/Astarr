@@ -1,5 +1,5 @@
-/** Designed loading / error / empty / not-found states.
-    PRD Section 7: no screen may ever render a blank area or an unhandled error. */
+/** Loading, error, empty and not-found are designed screens, not blank areas.
+    No view in this tool may ever render an empty region or an unhandled error. */
 
 import { Link } from "react-router-dom";
 
@@ -31,17 +31,14 @@ export function ErrorState({
       <p className="state__body">{message}</p>
       <div className="state__actions">
         {onRetry && (
-          <button type="button" className="btn" onClick={onRetry}>
+          <button type="button" className="btn btn--primary" onClick={onRetry}>
             Try again
           </button>
         )}
         {backTo && (
-          <>
-            {onRetry ? " " : null}
-            <Link className="crumb" to="/">
-              Back to all entities
-            </Link>
-          </>
+          <Link className="btn" to="/">
+            Back to the ranking
+          </Link>
         )}
       </div>
     </div>
@@ -53,11 +50,12 @@ export function NotFound({ message }: { message: string }) {
     <div className="state" role="alert">
       <p className="state__title">{message}</p>
       <p className="state__body">
-        It may have been removed by a demo reset. The entity list is always current.
+        It may have been removed when a new dataset was loaded. The ranking is
+        always current.
       </p>
       <div className="state__actions">
-        <Link className="crumb" to="/">
-          Back to all entities
+        <Link className="btn btn--primary" to="/">
+          Back to the ranking
         </Link>
       </div>
     </div>

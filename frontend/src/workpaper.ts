@@ -23,6 +23,17 @@ export const RULE_SECTION: Record<string, number> = {
   "ML-001": 8,
 };
 
+/** The highest score the formula can produce.
+ *
+ *  Not 100. Each tier is capped at 100 individually and then weighted -- 0.45,
+ *  0.40, 0.15 -- but the ML tier's own raw sum cannot exceed 10, so it can only
+ *  ever contribute 1.5. 45 + 40 + 1.5 = 86.5. Every bar on the ranking screen is
+ *  drawn against this, which is the only thing that makes the bars comparable
+ *  between rows, and the ranking screen prints it beside each score so a reader
+ *  is never left to assume the scale runs to 100.
+ */
+export const ATTAINABLE_MAX = 86.5;
+
 /** The working paper this run produces. Fixed: the dataset is fixed. */
 export const WORKPAPER_ID = "WP-2026-01";
 
