@@ -573,17 +573,98 @@ change is one edit.
 
 ## 12. Non-functional requirements
 
+All figures below are **measured**, not estimated — on the v1 pipeline, 2 vCPU, Linux,
+Python 3.11, DuckDB. Reproduce with `scripts/bench.py`. They are the numbers to put in
+the Architecture Document and the "Infrastructure requirements" deliverable.
+
+### 12.1 Throughput, by dataset size (50 entities)
+
+| Records | Parse | Load | Detect | Score | **Total** | Peak RSS |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 0.07s | 0.30s | 1.18s | 0.01s | **1.6s** | 298 MiB |
+| 25,000 | 0.19s | 0.46s | 1.44s | 0.01s | **2.1s** | 324 MiB |
+| 50,000 | 0.38s | 0.61s | 1.84s | 0.01s | **2.8s** | 355 MiB |
+| 100,000 | 0.72s | 0.96s | 1.79s | 0.02s | **3.4s** | 420 MiB |
+| 1,000,000 | 12.3s | 6.1s | 10.9s | 0.05s | **29.8s** | 1,530 MiB |
+
+### 12.2 Throughput, by entity count (100,000 records)
+
+The axis the problem statement cares about — *"a growing number of CSEs"*.
+
+| Entities | Detect | Total |
+| ---: | ---: | ---: |
+| 20 | 1.79s | 3.40s |
+| 100 | 2.78s | 5.03s |
+| 500 | 5.09s | 6.92s |
+| 2,000 | 13.35s | 16.64s |
+
+### 12.3 Stated minimum specification
+
+> **2 vCPU · 2 GiB RAM · 1 GiB disk · no GPU · no network.** Runs on a standard
+> air-gapped Windows or Linux VM. One million alert records ingest, analyse and score
+> in approximately 30 seconds at a peak of 1.5 GiB.
+
+### 12.4 Other targets
+
 | Requirement | Target |
 | --- | --- |
-| Cold start to interactive | < 2s on the demo laptop |
-| Upload → recomputed dashboard | < 3s for 5,000 records |
+| Cold start to interactive | < 2s |
+| Upload → recomputed dashboard | < 4s for 100k records |
 | Bundle size | < 500KB gzipped including Recharts |
-| Offline | Renders identically with the network off. Verified by actually disabling it |
+| Offline | Renders identically with the network off. Verified by disabling it |
 | Determinism | Same input file → byte-identical findings and scores, every run |
-| Browser | Current Chrome and Edge. No IE, no polyfill budget |
+| Browser | Current Chrome and Edge |
 | Concurrency | Every DB endpoint serialised (§6.1) |
 
----
+### 12.5 Known limits — state these, do not hide them
+
+**1. Memory bounds throughput, not time.** Roughly **1.5 KiB of resident memory per
+record** — 1.5 GiB for a million rows, against a 150 MiB source file. Two causes, both
+architectural:
+
+- `ingest.parse_csv` materialises every row as a Python tuple before any of it is written
+- `detection._fetch_records` reads the whole table back as Python dicts
+
+A 2 GiB machine therefore handles about a million records. **Do not "fix" this with a
+larger `MAX_ROWS`** — the cap is what stops the process being OOM-killed mid-analysis.
+
+**2. Parsing is 41% of the 1M run.** 12.3 of 29.8 seconds is Python-level CSV validation.
+That cost buys per-line error messages, which is a product requirement (§4.4) and worth
+paying at current scale. It is the next thing to optimise after memory.
+
+**3. Detection still grows with entity count**, 1.79s → 13.35s from 20 to 2,000 entities
+at fixed record volume. The O(records × entities) scans were removed (each rule now reads
+a pre-bucketed slice), but per-entity work remains genuinely per-entity.
+
+### 12.6 Roadmap: streaming ingestion
+
+The single change that lifts the ceiling. Not required for v2; required before anyone
+loads 10M records.
+
+- **Parse in chunks.** Validate and flush every N rows instead of building one list.
+  Keeps line-numbered errors; needs an all-or-nothing strategy (stage to a temp table,
+  swap on success) so a failure halfway still leaves the previous dataset intact.
+- **Push detection into SQL.** EG-001, EG-002 and EG-004 are row predicates and are
+  `WHERE` clauses. EG-003 and EG-005 are `GROUP BY … HAVING COUNT(*) >= n`. NS-001 is an
+  aggregate against a window. Only the ML layer needs rows in Python, and it already
+  operates on per-entity aggregates — a handful of rows regardless of dataset size.
+  This removes `_fetch_records` entirely, which is the larger of the two memory costs.
+- Expected result: memory flat in dataset size, bounded by DuckDB's own buffer pool
+  rather than by the Python heap.
+
+### 12.7 A product limit the numbers exposed
+
+1,000,000 records produced **220,514 findings**. That is not a performance problem — it
+is a prioritisation problem, and functional requirement #10 is *"prioritise entities,
+controls, processes and alert samples for manual review."* A supervisor cannot review
+220,000 findings, so at real volume the finding list stops being the deliverable and the
+**ranked entity list** becomes it.
+
+v2 must therefore treat entity-level rollup as the primary output and findings as
+drill-down detail — which the §7 information architecture already does, but the tree
+(§8.3) must be built to open lazily per entity rather than materialising every node.
+Add to the metrics layer: findings per entity per rule as counts, so the Overview never
+fetches individual findings at all.
 
 ## 13. Verification
 
@@ -627,7 +708,7 @@ Ship each phase working. Do not start a phase before the previous one's checks p
 | --- | --- | --- |
 | **0** | Branch, read `PRODUCT.md` + `DESIGN.md` + `rules.yaml`, run `verify.py`, record the baseline | Baseline recorded |
 | **1** | Delete `seed.py`; build `samples/`, `scripts/make-sample.py`, `DELETE /api/dataset`; rewrite `verify.py` onto the fixture | Suite green on the new fixture; empty DB stays empty |
-| **2** | Metrics layer + `/api/analytics/*`, fully typed, fully tested. **No UI work** | Every §5.1 metric has a passing hand-checked assertion |
+| **2** | Metrics layer + `/api/analytics/*`, fully typed, fully tested. **No UI work.** Aggregate in SQL — never `fetchall()` a raw records table into Python (§12.5) | Every §5.1 metric has a passing hand-checked assertion; 100k records still renders the Overview in < 4s |
 | **3** | Shell: routes, `LineSidebar` with the §11.1 fixes, empty state, Data screen | Can upload, see provenance, clear, and land back on empty |
 | **4** | Overview dashboard and all charts | Every chart renders, drills, and has empty/low-confidence states; **the §8.6 video path runs clean end to end** |
 | **5** | Cases tree + `Folder` evidence opener | Tree keyboard-navigable; counts reconcile with the schedule |
