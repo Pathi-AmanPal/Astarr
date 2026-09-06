@@ -48,15 +48,29 @@
   --accent-dim:  #2e4552;
   --accent-glow: rgba(134, 185, 220, 0.16);
 
+  /* Two neutral steps for marks that must be visible without claiming attention --
+     the severities a supervisor does not act on. Both measured against the bar
+     track (#111614): 6.2:1 and 4.0:1, comfortably over the 3:1 floor for a mark.
+     --rule-strong was used here first and is 1.74:1, which made the LOW bar
+     effectively invisible; a hairline colour is not a mark colour. */
+  --mark-2: #8b9a92;
+  --mark-3: #6a7a72;
+
   /* -- Severity: warm, reserved, never used for chrome --------------------- */
   --exception: #e8705c;
   --caution:   #d9a441;
   --clear:     #74a58c;
 
-  /* -- Tier composition. Fixed order EG → NS → ML, always with a legend. --- */
-  --tier-eg: #86b9dc;
-  --tier-ns: #7fb59b;
-  --tier-ml: #6f7f8a;
+  /* -- Tier composition. Fixed order EG → NS → ML, always with a legend. ---
+     Validated, not chosen by eye: all six checks pass against this surface,
+     including all-pairs CVD separation (worst ΔE 9.3) and the normal-vision floor
+     (worst ΔE 19.8). The previous set -- a blue, a sage and a steel grey -- looked
+     calmer and failed: #7fb59b against #86b9dc is ΔE 9.4 to NORMAL vision, well
+     under the floor of 15, so two adjacent segments of the composition bar were not
+     reliably separable by anyone. Re-run the checker before substituting these. */
+  --tier-eg: #398ad6;
+  --tier-ns: #399d57;
+  --tier-ml: #bc61a0;
 
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text",
     "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -1146,4 +1160,374 @@ tbody tr:last-child td { border-bottom: 0; }
     transition-duration: 0.01ms !important;
   }
   .rank tbody tr { animation: none; opacity: 1; transform: none; }
+}
+
+
+/* ============================================================================
+   Shell: line sidebar + page
+
+   The destinations are places a supervisor stays in, not modes they flick
+   between, so they stay visible rather than collapsing into a tab bar.
+   ========================================================================= */
+
+.shell {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  max-width: var(--measure);
+  margin: 0 auto;
+  align-items: start;
+}
+
+.shell .page { max-width: none; margin: 0; padding-left: 30px; }
+
+.rail {
+  position: sticky;
+  top: var(--topbar-h);
+  padding: 26px 0 26px var(--gutter);
+  border-right: 1px solid var(--rule);
+  min-height: calc(100dvh - var(--topbar-h));
+}
+
+.rail__list { list-style: none; margin: 0; padding: 0; }
+
+.rail__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 9px 12px 9px 0;
+  color: var(--ink-soft);
+  text-decoration: none;
+  border-radius: var(--r-sm);
+  transition: color var(--fast) var(--ease);
+}
+.rail__item:hover { color: var(--ink); }
+.rail__item:hover .rail__line { background: var(--rule-strong); }
+
+/* The line the component is named for. It is never the only signal: the label's
+   weight and ink change with it, so the active item survives a monochrome print
+   and a viewer who cannot separate the accent from the rule. */
+.rail__line {
+  flex: none;
+  width: 2px;
+  align-self: stretch;
+  min-height: 20px;
+  border-radius: 1px;
+  background: var(--rule);
+  transition: background var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.rail__item.is-active .rail__line {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+.rail__text { display: block; min-width: 0; }
+.rail__label { display: block; font-size: 13.5px; font-weight: 500; }
+.rail__item.is-active .rail__label { color: var(--ink); font-weight: 600; }
+.rail__hint {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  text-wrap: pretty;
+}
+
+.rail__note {
+  margin: 22px 12px 0 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+  text-wrap: pretty;
+}
+
+/* ============================================================================
+   Overview: panels and charts
+   ========================================================================= */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 14px;
+  margin-top: 22px;
+  /* Panels size to their content. Stretching them to match the tallest in the row
+     left a three-row panel with 300px of void beneath it, which reads as something
+     that failed to load. */
+  align-items: start;
+}
+
+.panel {
+  padding: 16px 18px 18px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--lift-1);
+  min-width: 0;
+}
+.panel--wide { grid-column: 1 / -1; }
+
+.panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.panel__title {
+  margin: 0 0 3px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+/* A chart whose units are unstated is unreadable however good the bars are. */
+.panel__caption {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ink-faint);
+  text-wrap: pretty;
+}
+.panel__plot { min-width: 0; }
+.panel__none {
+  margin: 0;
+  padding: 20px 16px;
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--r-md);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  text-wrap: pretty;
+}
+.panel__foot {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.panel code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+/* Recharts paints its own focus outline on the wrapper; suppress that one and let
+   the app's single focus treatment apply. */
+.recharts-wrapper:focus { outline: none; }
+.recharts-surface { overflow: visible; }
+
+.key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.key li { display: flex; align-items: center; gap: 6px; }
+.key__swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.toggle {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--ground-2);
+}
+.toggle__btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 4px 10px;
+  border-radius: 2px;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.toggle__btn:hover { color: var(--ink); }
+.toggle__btn.is-on { background: var(--panel-hi); color: var(--ink); }
+
+/* A labelled bar row, used wherever a pie would otherwise appear. Lengths off a
+   shared left edge beat angles, and the count and share ride along as text. */
+.brows { display: flex; flex-direction: column; gap: 7px; }
+
+.brow {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr) 74px 52px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.brow__label {
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brow__track {
+  height: 9px;
+  border-radius: 2px;
+  background: var(--ground-2);
+  box-shadow: 0 0 0 1px var(--rule) inset;
+  overflow: hidden;
+}
+.brow__fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  transition: width var(--med) var(--ease);
+}
+.brow__value { text-align: right; color: var(--ink); font-size: 11.5px; }
+.brow__share { text-align: right; color: var(--ink-faint); font-size: 11.5px; }
+
+/* ============================================================================
+   Empty state — a screen, not a blank area
+   ========================================================================= */
+
+.onboard { max-width: 860px; }
+.onboard__lead { margin-bottom: 22px; }
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 52px 28px;
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(120% 90% at 50% -10%, rgba(134, 185, 220, 0.07), transparent 70%),
+    var(--panel);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+.drop:hover { border-color: var(--ink-faint); }
+/* The input inside is what receives focus, so the ring has to be drawn here. */
+.drop:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+.drop.is-dragging { border-color: var(--accent); border-style: solid; }
+.drop.is-busy { cursor: progress; opacity: 0.75; }
+
+.drop__icon { width: 30px; height: 30px; color: var(--accent); margin-bottom: 4px; }
+.drop__title { font-size: 15px; font-weight: 550; color: var(--ink); }
+.drop__sub { font-size: 12.5px; color: var(--ink-faint); }
+
+.onboard__schema { margin-top: 8px; }
+
+.schema { margin: 0; }
+.schema > div { display: flex; gap: 14px; align-items: baseline; margin-bottom: 9px; }
+.schema dt { flex: none; width: 68px; padding-top: 2px; }
+.schema dd { margin: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+
+/* ============================================================================
+   Data screen
+   ========================================================================= */
+
+.prov {
+  padding: 18px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--lift-1);
+}
+.prov__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 18px;
+  margin: 0;
+}
+.prov__grid dd { margin: 5px 0 0; font-size: 13px; color: var(--ink); }
+.prov__actions {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+
+/* Destructive actions look destructive before they are pressed, and the press
+   still goes through a confirmation that names what is about to be lost. */
+.btn--danger { color: var(--exception); border-color: var(--exception); }
+.btn--danger:hover:not(:disabled) {
+  background: rgba(232, 112, 92, 0.12);
+  border-color: var(--exception);
+}
+
+.files { list-style: none; margin: 4px 0 0; padding: 0; }
+.files li {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  align-items: baseline;
+}
+.files li:last-child { border-bottom: 0; }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 8, 6, 0.66);
+  backdrop-filter: blur(2px);
+  animation: fade-in var(--fast) var(--ease);
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.modal__box {
+  width: min(460px, 100%);
+  padding: 22px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--lift-2);
+}
+.modal__title { margin: 0 0 8px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.modal__body { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ink-soft); text-wrap: pretty; }
+.modal__actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+
+/* ============================================================================
+   Narrow screens, for the new furniture
+   ========================================================================= */
+
+@media (max-width: 1080px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .shell .page { padding-left: var(--gutter); }
+  .rail {
+    position: static;
+    min-height: 0;
+    padding: 12px var(--gutter);
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .rail__list { display: flex; gap: 18px; }
+  .rail__hint, .rail__note { display: none; }
+  .rail__item { padding: 6px 0; }
+  .rail__line { align-self: center; width: 100%; height: 2px; min-height: 0; }
+  .rail__item { flex-direction: column-reverse; gap: 5px; }
+  .files li { grid-template-columns: 1fr; gap: 4px; }
+  .brow { grid-template-columns: 92px minmax(0, 1fr) 66px 46px; }
 }

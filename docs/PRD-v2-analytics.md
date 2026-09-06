@@ -28,7 +28,7 @@ rewritten and must not be.**
 | `backend/config.py` | Validating loader for the above | Keep |
 | `backend/ml.py` | Isolation Forest + SHAP corroboration | Keep; extend read-only |
 | `backend/ingest.py` | CSV/JSON validating parser | Keep; extend |
-| `backend/verify.py` | The regression suite. Currently 143 checks | **Extend. Never weaken.** |
+| `backend/verify.py` | The regression suite. Currently 165 checks | **Extend. Never weaken.** |
 | `backend/db.py` | DuckDB schema and connection | Extend with new tables |
 
 ### 1.2 Replace
@@ -204,12 +204,32 @@ value is still a rejected row with a line number, never a defaulted one.
 This does not weaken §4.4's rule below. Renaming a column the operator supplied is not
 repairing data; inventing a value they did not supply is, and that is still refused.
 
+### 4.3b Phase 3 status, and what is not done
+
+*Recorded 2026-09-06 so this document does not outrun the code.*
+
+**Built:** the line sidebar and shell, the designed empty state (drag-and-drop upload,
+line-numbered rejection, schema reference), the Data screen (provenance, confirmed
+clear, template download), `DELETE /api/dataset`, `GET /api/analytics/overview`, and
+the Overview screen's six panels.
+
+**Not built, and not stubbed:** the Cases tree and `/cases`. There is no nav item for
+it — a destination that leads to a placeholder is the anti-pattern in §9.2, so the
+sidebar names the absence in one line instead.
+
+**One assumption in the Phase 3 plan was wrong.** It stated that `seed.py` was removed
+in Phase 1. It was not: the file exists and startup still seeds an empty database.
+Deleting it changes the ground truth of 165 regression checks, so it was not done as a
+side effect of a frontend phase. The consequence is bounded and worth knowing: a clear
+empties the tool until the server restarts, at which point the demo seed returns. The
+Data screen's provenance card says which of the two is loaded.
+
 ### 4.4 Data lifecycle endpoints
 
 | Method | Path | Behaviour |
 | --- | --- | --- |
 | `POST` | `/api/dataset/upload` | multipart CSV/JSON. Validate fully, then replace. Exists today — keep |
-| `DELETE` | `/api/dataset` | Wipe everything and return to the empty state. **New** |
+| `DELETE` | `/api/dataset` | Wipe everything and return to the empty state. **Built 2026-09-06** |
 | `GET` | `/api/dataset` | Provenance: source, label, loaded_at, counts. Exists — keep |
 | `GET` | `/api/dataset/template.csv` | Exists — keep |
 
@@ -226,6 +246,20 @@ admitting it. Preserve every rejection case in `verify.py`.
 This is the analytical core of v2. **Every metric below is computed server-side and
 exposed through the API. The frontend performs no analysis beyond formatting.** That
 keeps one definition of every number, and keeps it testable in `verify.py`.
+
+### 5.0a Where these live
+
+*Built 2026-09-06.* `GET /api/analytics/overview` serves the whole Overview screen in
+one response — one request rather than six, so its panels cannot disagree with each
+other if a load lands between two of them. `backend/analytics.py` holds the queries.
+
+Two rules the module keeps, asserted in `verify.py`:
+
+- **Absent is not zero.** A dataset with no closed alert returns `null` percentiles,
+  never `0.0`, which would render as a SOC that closes everything instantly.
+- **No second implementation of a number.** The score histogram is bucketed from
+  `scoring.ranked_entities`, not recomputed in SQL. There is one weighted-tier formula
+  in this system.
 
 ### 5.1 Computable from the current schema
 
@@ -746,7 +780,7 @@ fetches individual findings at all.
 
 ## 13. Verification
 
-`verify.py` is the gate. It currently reports **143 checks, 0 failures** and must never
+`verify.py` is the gate. It currently reports **165 checks, 0 failures** and must never
 be weakened to accommodate a change. Extend it:
 
 **Existing, keep (adapted to the sample fixture):** every rule fires exactly where

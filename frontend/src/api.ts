@@ -122,6 +122,77 @@ export interface MlProfile {
   features: MlFeature[];
 }
 
+export interface ClearResult {
+  status: string;
+  entities_removed: number;
+  records_removed: number;
+}
+
+/** One bar of the score histogram. `band` is the supervisory band the bucket sits
+    in, so the chart colours it the same way the ranking table colours those rows. */
+export interface ScoreBucket {
+  lower: number;
+  upper: number;
+  label: string;
+  count: number;
+  band: "exception" | "caution" | "clear";
+}
+
+export interface TimeBucket {
+  bucket: string;
+  count: number;
+}
+
+/** Closure-time percentiles. Every figure is nullable: a dataset with no closed
+    alert has no percentiles, and 0 would render as a SOC that closes instantly. */
+export interface Closure {
+  mean: number | null;
+  median: number | null;
+  p90: number | null;
+  measured_on: number;
+  unclosed: number;
+}
+
+/** The range of the daily series, stated beside the chart: a genuinely steady SOC
+    draws as a near-flat line, which reads as a broken chart without it. */
+export interface VolumeShape {
+  per_day_min: number;
+  per_day_max: number;
+  days: number;
+}
+
+export interface RuleCount {
+  rule_id: string;
+  tier: "EXECUTION_GAP" | "NEGATIVE_SPACE" | "ML_CORROBORATION";
+  count: number;
+  weight: number;
+}
+
+export interface KeyCount {
+  key: string;
+  count: number;
+}
+
+/** Everything the Overview screen renders, in one response. Computed server-side:
+    the frontend formats these numbers and does not derive new ones. */
+export interface Overview {
+  entity_count: number;
+  record_count: number;
+  finding_count: number;
+  sector_count: number;
+  attention_count: number;
+  clean_count: number;
+  score_distribution: ScoreBucket[];
+  volume_by_day: TimeBucket[];
+  volume_by_week: TimeBucket[];
+  closure: Closure;
+  volume: VolumeShape;
+  findings_by_rule: RuleCount[];
+  severity_mix: KeyCount[];
+  disposition_mix: KeyCount[];
+  top_categories: KeyCount[];
+}
+
 /** Thrown for every failure, always carrying a message safe to render.
     `details` carries per-line validation problems from a rejected upload; it is empty
     for every other kind of failure. */
@@ -172,6 +243,11 @@ export const resetDemo = () =>
   request<ResetResult>("/api/demo/reset", { method: "POST" });
 
 export const getDataset = () => request<DatasetInfo>("/api/dataset");
+
+export const getOverview = () => request<Overview>("/api/analytics/overview");
+
+export const clearDataset = () =>
+  request<ClearResult>("/api/dataset", { method: "DELETE" });
 
 export const getMlProfile = (entityId: string) =>
   request<MlProfile>(`/api/entities/${encodeURIComponent(entityId)}/ml`);

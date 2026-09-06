@@ -28,6 +28,7 @@ import {
   resetDemo,
   uploadDataset,
 } from "../api";
+import LineSidebar from "./LineSidebar";
 
 interface DatasetState {
   dataset: DatasetInfo | null;
@@ -35,6 +36,14 @@ interface DatasetState {
   version: number;
   busy: boolean;
   openPicker: () => void;
+  /** For a page that changed the data itself -- the Data screen's clear action --
+      so every other screen refetches without it needing to know who they are. */
+  bumpVersion: () => void;
+  /** Refetch provenance after a change made elsewhere. */
+  refreshDataset: () => Promise<void>;
+  /** Restore the built-in seed. Lives here rather than on the Data screen because
+      it shares the shell's busy state and its error banner. */
+  resetDemo: () => Promise<void>;
 }
 
 const DatasetContext = createContext<DatasetState>({
@@ -42,6 +51,9 @@ const DatasetContext = createContext<DatasetState>({
   version: 0,
   busy: false,
   openPicker: () => {},
+  bumpVersion: () => {},
+  refreshDataset: async () => {},
+  resetDemo: async () => {},
 });
 
 export const useDataset = () => useContext(DatasetContext);
@@ -138,9 +150,15 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   }
 
   const openPicker = useCallback(() => fileInput.current?.click(), []);
+  const bumpVersion = useCallback(() => setVersion((v) => v + 1), []);
 
   return (
-    <DatasetContext.Provider value={{ dataset, version, busy, openPicker }}>
+    <DatasetContext.Provider
+      value={{
+        dataset, version, busy, openPicker, bumpVersion, refreshDataset,
+        resetDemo: onReset,
+      }}
+    >
       <a className="skip" href="#main">Skip to content</a>
 
       <header className="topbar">
@@ -187,14 +205,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             >
               {uploading ? "Loading…" : "Load alert export"}
             </button>
-            <button type="button" className="btn" onClick={onReset} disabled={busy}>
-              {resetting ? "Resetting…" : "Reset demo"}
-            </button>
           </div>
         </div>
       </header>
 
-      <main className="page" id="main">
+      <div className="shell">
+        <LineSidebar />
+        <main className="page" id="main">
         <div className="notices">
           {mappingNotes.length > 0 && (
             <div className="banner banner--stack banner--info" role="status">
@@ -254,8 +271,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           )}
         </div>
 
-        {children}
-      </main>
+          {children}
+        </main>
+      </div>
     </DatasetContext.Provider>
   );
 }

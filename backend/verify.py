@@ -797,6 +797,134 @@ def main() -> int:
           ents_messy_s == e_canon and n_messy_s == len(r_canon))
     check("...and reports the same substitutions", notes_stream == notes_messy)
 
+    print("\nOverview analytics agree with the rest of the system")
+    # The Overview is a second view of numbers that already exist elsewhere. The one
+    # way it can be wrong is by disagreeing with them, so that is what is asserted --
+    # not that the queries run.
+    import analytics as _an
+
+    ov = _an.overview(con)
+    ranked = ranked_entities(con)
+    ov["score_distribution"] = _an.score_distribution([e["risk_score"] for e in ranked])
+
+    check("overview entity count matches the ranking",
+          ov["entity_count"] == len(ranked), f"{ov['entity_count']} vs {len(ranked)}")
+    check("overview record count matches the records table",
+          ov["record_count"] == con.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+    check("overview finding count matches the findings table",
+          ov["finding_count"] == con.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
+    check("attention + clean accounts for every entity",
+          ov["attention_count"] + ov["clean_count"] == ov["entity_count"],
+          f"{ov['attention_count']} + {ov['clean_count']} vs {ov['entity_count']}")
+
+    # A histogram that drops or double-counts an entity is worse than no histogram:
+    # it looks authoritative and is wrong by a number nobody can see.
+    check("every entity lands in exactly one score bucket",
+          sum(b["count"] for b in ov["score_distribution"]) == len(ranked),
+          f"{sum(b['count'] for b in ov['score_distribution'])} of {len(ranked)}")
+
+    check("the severity mix accounts for every record",
+          sum(m["count"] for m in ov["severity_mix"]) == ov["record_count"])
+    check("the disposition mix accounts for every record",
+          sum(m["count"] for m in ov["disposition_mix"]) == ov["record_count"])
+    check("findings by rule accounts for every finding",
+          sum(r["count"] for r in ov["findings_by_rule"]) == ov["finding_count"])
+    check("volume by day accounts for every record",
+          sum(v["count"] for v in ov["volume_by_day"]) == ov["record_count"])
+    check("volume by week accounts for the same records",
+          sum(v["count"] for v in ov["volume_by_week"]) == ov["record_count"])
+
+    c_ov = ov["closure"]
+    check("closure percentiles are ordered median <= p90",
+          c_ov["median"] is None or c_ov["median"] <= c_ov["p90"],
+          f"median {c_ov['median']} p90 {c_ov['p90']}")
+    check("measured_on + unclosed accounts for every record",
+          c_ov["measured_on"] + c_ov["unclosed"] == ov["record_count"])
+
+    # Absent is not zero. A dataset with nothing closed must report null percentiles,
+    # because 0.0 renders as a SOC that closes every alert instantly.
+    con_nc = db.connect(os.path.join(tempfile.mkdtemp(), "noclose.duckdb"))
+    noclose = ("record_id,entity_id,entity_name,sector,asset_id,severity,category,"
+               "opened_at,disposition\n"
+               "N-1,E-1,One,Energy,A-1,HIGH,Malware,2026-01-05T08:00:00,BENIGN\n"
+               "N-2,E-2,Two,Energy,A-2,LOW,Phishing,2026-01-05T09:00:00,BENIGN\n")
+    en, rn = ingest.parse_csv(noclose)
+    ingest.load(con_nc, en, rn, "noclose.csv")
+    nc = _an.overview(con_nc)
+    check("a dataset with no closed alert reports null percentiles, not zero",
+          nc["closure"]["median"] is None and nc["closure"]["p90"] is None,
+          str(nc["closure"]))
+    check("...and counts every record as unclosed",
+          nc["closure"]["unclosed"] == 2 and nc["closure"]["measured_on"] == 0)
+
+    # An empty database returns empty series, not a page of zeros.
+    con_empty = db.connect(os.path.join(tempfile.mkdtemp(), "empty.duckdb"))
+    ee = _an.overview(con_empty)
+    check("an empty database returns empty series",
+          ee["record_count"] == 0 and ee["volume_by_day"] == []
+          and ee["severity_mix"] == [] and ee["closure"]["median"] is None)
+
+    print("\nClearing the dataset removes everything")
+    con_clear = db.connect(os.path.join(tempfile.mkdtemp(), "clear.duckdb"))
+    ec, rc2 = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    ingest.load(con_clear, ec, rc2, "template.csv")
+    _det.run_detection(con_clear)
+    db.wipe(con_clear)
+    remaining = {
+        t: con_clear.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        for t in ("records", "entities", "findings", "ml_profile", "dataset_meta")
+    }
+    check("every table is empty after a clear", all(n == 0 for n in remaining.values()),
+          str(remaining))
+    check("...and provenance is gone with it, not left naming a dataset that is not "
+          "loaded", db.dataset_meta(con_clear) is None)
+
+    print("\nA rejected upload leaves the endpoint's dataset alone")
+    # verify.py already asserts that `load_streaming` does not touch the database on a
+    # bad file. That passed while the UPLOAD ENDPOINT, one layer above it, answered a
+    # malformed CSV with 500 "the demo dataset was restored" and then wiped and
+    # reseeded -- so a supervisor with real data loaded lost it to a single bad
+    # severity value. The loader was innocent; the handler was not. This tests the
+    # handler.
+    import asyncio as _asyncio
+
+    import main as _api2
+
+    class _FakeUpload:
+        """The two attributes the endpoint reads off an UploadFile."""
+
+        def __init__(self, name: str, body: bytes) -> None:
+            self.filename = name
+            self._body = body
+
+        async def read(self) -> bytes:
+            return self._body
+
+    con_up = db.connect(os.path.join(tempfile.mkdtemp(), "upload.duckdb"))
+    _api2.app.state.con = con_up
+    good = ingest.TEMPLATE_CSV.encode()
+    _asyncio.run(_api2.dataset_upload(_FakeUpload("good.csv", good)))
+    before = con_up.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+
+    bad = (b"record_id,entity_id,entity_name,sector,asset_id,severity,category,"
+           b"opened_at,disposition\n"
+           b"R-1,E-1,One,Energy,A-1,NOPE,Malware,2026-01-05T08:00:00,BENIGN\n")
+    status, detail = None, {}
+    try:
+        _asyncio.run(_api2.dataset_upload(_FakeUpload("bad.csv", bad)))
+    except Exception as exc:  # HTTPException
+        status = getattr(exc, "status_code", None)
+        detail = getattr(exc, "detail", {}) or {}
+
+    after = con_up.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    check("a bad file is refused with 400, not 500", status == 400, f"got {status}")
+    check("...and the error carries the line-numbered problems",
+          any("Line" in d for d in detail.get("details", [])),
+          str(detail.get("details", []))[:90])
+    check("...and the loaded dataset is untouched, not replaced by the seed",
+          after == before and before > 0, f"{before} records before, {after} after")
+    _api2.app.state.con = con
+
     print("\nCORS admits any loopback port, and nothing else")
     # The browser reports a CORS rejection to fetch() as an indistinct network error,
     # so a blocked origin makes the UI say "cannot reach backend" about a backend that

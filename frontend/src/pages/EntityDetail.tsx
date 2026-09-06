@@ -326,7 +326,7 @@ export default function EntityDetailPage() {
   if (error?.status === 404) {
     return (
       <>
-        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Not found" }]} />
+        <Crumbs trail={[{ label: "Overview", to: "/" }, { label: "Entities", to: "/entities" }, { label: "Not found" }]} />
         <NotFound message="No such entity" />
       </>
     );
@@ -335,7 +335,7 @@ export default function EntityDetailPage() {
   if (error) {
     return (
       <>
-        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Entity" }]} />
+        <Crumbs trail={[{ label: "Overview", to: "/" }, { label: "Entities", to: "/entities" }, { label: "Entity" }]} />
         <ErrorState message={error.message} onRetry={() => void load()} backTo />
       </>
     );
@@ -344,7 +344,7 @@ export default function EntityDetailPage() {
   if (!entity) {
     return (
       <>
-        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Entity" }]} />
+        <Crumbs trail={[{ label: "Overview", to: "/" }, { label: "Entities", to: "/entities" }, { label: "Entity" }]} />
         <Loading rows={5} label="Loading entity" />
       </>
     );
@@ -360,7 +360,11 @@ export default function EntityDetailPage() {
   return (
     <>
       <Crumbs
-        trail={[{ label: "Ranking", to: "/" }, { label: entity.entity_name }]}
+        trail={[
+          { label: "Overview", to: "/" },
+          { label: "Entities", to: "/entities" },
+          { label: entity.entity_name },
+        ]}
       />
 
       <div className="head">

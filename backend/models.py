@@ -142,5 +142,75 @@ class UploadResult(BaseModel):
     mapping_notes: list[str] = []
 
 
+class ClearResult(BaseModel):
+    status: str
+    entities_removed: int
+    records_removed: int
+
+
+class ScoreBucket(BaseModel):
+    lower: float
+    upper: float
+    label: str
+    count: int
+    band: str
+
+
+class TimeBucket(BaseModel):
+    bucket: str
+    count: int
+
+
+class Closure(BaseModel):
+    """Closure-time percentiles. Every field is nullable on purpose: a dataset with no
+    closed alert has no percentiles, and returning 0.0 would render as a SOC that
+    closes everything instantly."""
+
+    mean: float | None
+    median: float | None
+    p90: float | None
+    measured_on: int
+    unclosed: int
+
+
+class VolumeShape(BaseModel):
+    """The range of the daily series. Stated beside the chart because a steady series
+    draws as a near-flat line, which reads as a rendering failure without it."""
+
+    per_day_min: int
+    per_day_max: int
+    days: int
+
+
+class RuleCount(BaseModel):
+    rule_id: str
+    tier: str
+    count: int
+    weight: int
+
+
+class KeyCount(BaseModel):
+    key: str
+    count: int
+
+
+class Overview(BaseModel):
+    entity_count: int
+    record_count: int
+    finding_count: int
+    sector_count: int
+    attention_count: int
+    clean_count: int
+    score_distribution: list[ScoreBucket]
+    volume_by_day: list[TimeBucket]
+    volume_by_week: list[TimeBucket]
+    closure: Closure
+    volume: VolumeShape
+    findings_by_rule: list[RuleCount]
+    severity_mix: list[KeyCount]
+    disposition_mix: list[KeyCount]
+    top_categories: list[KeyCount]
+
+
 class Health(BaseModel):
     status: str

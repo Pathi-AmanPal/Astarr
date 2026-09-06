@@ -6,13 +6,14 @@ against it.*
 
 ## Scope of this document
 
-This records the direction now on screen: the **three existing screens** — ranking,
-entity, evidence — rebuilt around a new visual system, a persistent shell and a real
-navigation trail. It is **not** the v2 information architecture described in
-[`docs/PRD-v2-analytics.md`](docs/PRD-v2-analytics.md): there is still no case tree,
-no `Folder` component, no `LineSidebar`, and no chart beyond the composition bar. Those
-remain that document's scope, and PRD §9's binding floor (anti-patterns, accessibility,
-tabular figures) is what this direction was built to satisfy.
+This records the direction now on screen. As of 2026-09-06 that is five screens —
+overview, ranking, entity, evidence, data — behind a line sidebar, plus a designed
+empty state and six analytics panels.
+
+Still **not** built, and deliberately not stubbed: the Cases tree, `/cases`, and the
+`Folder` evidence component from [`docs/PRD-v2-analytics.md`](docs/PRD-v2-analytics.md)
+§11.2. A nav destination that leads to a placeholder is the anti-pattern in PRD §9.2,
+so the sidebar names the absence in a line rather than offering a dead door.
 
 ## The one-line brief
 
@@ -55,7 +56,8 @@ is the entire job of the ranking screen.
 | `--exception` | `#e8705c` | 5.6:1 | severity only |
 | `--caution` | `#d9a441` | 8.4:1 | severity only |
 | `--clear` | `#74a58c` | 6.5:1 | severity only |
-| `--tier-eg/ns/ml` | `#86b9dc` `#7fb59b` `#6f7f8a` | ≥3:1 | composition bar, always with a legend |
+| `--tier-eg/ns/ml` | `#398ad6` `#399d57` `#bc61a0` | ≥3:1 | composition bar and charts, always with a legend |
+| `--mark-2` / `--mark-3` | `#8b9a92` / `#6a7a72` | 6.2:1 / 4.0:1 on the bar track | neutral marks that must be visible without claiming attention |
 
 Type is system stacks — `ui-sans-serif` and `ui-monospace` heads. **No webfont, ever**:
 the tool must render identically with the network disabled and it ships air-gapped, so
@@ -64,6 +66,33 @@ an inline SVG data URI for the same reason.
 
 Radius tightens inward: `10px` containers, `6px` panels, `3px` chips. Shadows carry the
 ground's hue rather than black, and all of them fall from one light.
+
+## Chart colour is computed, not chosen
+
+The categorical palette is run through a validator, not judged by eye. The three tier
+colours above pass all six checks against this ground — lightness band, chroma floor,
+all-pairs CVD separation (worst ΔE 9.3) and the normal-vision floor (worst ΔE 19.8).
+
+**The set they replaced did not.** A blue, a sage and a steel grey looked calmer and
+failed: `#7fb59b` against `#86b9dc` is ΔE 9.4 to *normal* vision, under the floor of
+15, so two adjacent segments of the composition bar were not reliably separable by
+anyone at all — not a colour-vision edge case, everybody. Re-run the checker before
+substituting these.
+
+The same discipline caught a second one: the LOW severity bar was painted
+`--rule-strong`, which is 1.74:1 against its track. A hairline colour is not a mark
+colour. Marks are measured against the surface they sit on, and the floor is 3:1.
+
+Rules the charts keep:
+
+- **One axis, ever.** Two measures of different scale get two panels.
+- **No pie.** Every "mix of one categorical field" is a labelled bar row — lengths off
+  a shared left edge beat angles, and the count and share ride along as text.
+- **Absent is drawn as absent.** A dataset with no closed alerts renders a sentence
+  saying so, not three bars of zero.
+- **Every chart has a caption stating its units**, and a visually hidden table
+  carrying the same figures.
+- **Text wears text tokens**, never the series colour.
 
 ## Rules the build follows
 

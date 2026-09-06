@@ -90,7 +90,7 @@ export default function EvidenceView() {
   if (error?.status === 404) {
     return (
       <>
-        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Not found" }]} />
+        <Crumbs trail={[{ label: "Overview", to: "/" }, { label: "Entities", to: "/entities" }, { label: "Not found" }]} />
         <NotFound message="No such finding" />
       </>
     );
@@ -99,7 +99,7 @@ export default function EvidenceView() {
   if (error) {
     return (
       <>
-        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Evidence" }]} />
+        <Crumbs trail={[{ label: "Overview", to: "/" }, { label: "Entities", to: "/entities" }, { label: "Evidence" }]} />
         <ErrorState message={error.message} onRetry={() => void load()} backTo />
       </>
     );
@@ -108,7 +108,7 @@ export default function EvidenceView() {
   if (!evidence) {
     return (
       <>
-        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Evidence" }]} />
+        <Crumbs trail={[{ label: "Overview", to: "/" }, { label: "Entities", to: "/entities" }, { label: "Evidence" }]} />
         <Loading rows={5} label="Loading evidence" />
       </>
     );
@@ -118,7 +118,7 @@ export default function EvidenceView() {
     <>
       <Crumbs
         trail={[
-          { label: "Ranking", to: "/" },
+          { label: "Entities", to: "/entities" },
           { label: evidence.entity_name, to: `/entities/${evidence.entity_id}` },
           { label: evidence.finding_id },
         ]}

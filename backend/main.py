@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+import analytics
 import db
 import ingest
 import models
@@ -277,6 +278,51 @@ def dataset_info():
     return meta
 
 
+@app.delete("/api/dataset", response_model=models.ClearResult)
+@serialised
+def dataset_clear():
+    """Wipe every table and return to the empty state.
+
+    Destructive and deliberately unguarded on the server: the confirmation belongs in
+    the UI, where the operator can see what they are about to lose. What the server
+    guarantees is that it is complete -- findings, ml_profile, records, entities and
+    the provenance row all go, so nothing survives to make the next screen half-true.
+
+    Note the one asymmetry with the PRD: `seed.py` still exists on this branch, and
+    startup seeds an empty database. So a clear leaves the tool empty until the server
+    is restarted, at which point the demo seed returns. Removing the seed is a change
+    to the regression suite's ground truth and is not smuggled in behind a frontend
+    phase.
+    """
+    con = app.state.con
+    before = db.dataset_meta(con) or {}
+    db.wipe(con)
+    return {
+        "status": "dataset_cleared",
+        "entities_removed": before.get("entity_count", 0),
+        "records_removed": before.get("record_count", 0),
+    }
+
+
+@app.get("/api/analytics/overview", response_model=models.Overview)
+@serialised
+def analytics_overview():
+    """Every figure the Overview screen renders, computed server-side.
+
+    One request, not six: the screen is a single view of one dataset, and six endpoints
+    would let its panels disagree with each other if a load landed between two of them.
+    """
+    con = app.state.con
+    data = analytics.overview(con)
+    data.pop("_entity_ids", None)
+    # The score distribution is built from the scored entities rather than recomputed
+    # in SQL. There is exactly one implementation of the weighted-tier formula in this
+    # system and it is in scoring.py; a second one in a query would be a second answer.
+    scores = [e["risk_score"] for e in ranked_entities(con)]
+    data["score_distribution"] = analytics.score_distribution(scores) if scores else []
+    return data
+
+
 @app.get("/api/dataset/template.csv", include_in_schema=False)
 def dataset_template():
     """A valid three-row example of the upload format.
@@ -360,9 +406,32 @@ async def dataset_upload(file: UploadFile = File(...)):
             else:
                 entities_loaded, records_loaded = ingest.load(con, entities, records, label)
             findings_generated = run_detection(con)
+    except ingest.IngestError as exc:
+        # A malformed CSV. Caught HERE, before the generic handler below, because a
+        # rejected file is the user's problem and not the server's -- and because the
+        # recovery below is catastrophic for it.
+        #
+        # This was a live bug. The CSV path validates inside `load_streaming`, so its
+        # IngestError was raised inside the try block and fell through to the generic
+        # `except Exception`, which answered 500 "the demo dataset was restored" and
+        # then WIPED AND RESEEDED. A supervisor with a real dataset loaded who
+        # uploaded a file with one bad severity value lost their data and was told the
+        # server had failed. `verify.py` asserted atomicity against `load_streaming`
+        # directly, which is correct and which is exactly why this got through: the
+        # defect was in the endpoint's error handling, one layer above the test.
+        #
+        # `load_streaming` completes validation before it touches the database, so
+        # nothing has been written and there is nothing to recover from.
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"{len(exc.errors)} problem(s) in the file — nothing was "
+                             f"loaded, the previous dataset is still in place.",
+                    "details": exc.errors},
+        )
     except Exception as exc:
-        # The dataset is now indeterminate; restore the demo rather than serve a
-        # half-written schedule.
+        # Anything else really is indeterminate -- a failure part-way through the
+        # insert, or in detection after the rows landed. Restore the demo rather than
+        # serve a half-written schedule.
         with _db_lock:
             _seed_demo(con)
         raise HTTPException(
