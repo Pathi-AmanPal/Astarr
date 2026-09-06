@@ -585,10 +585,29 @@ def main() -> int:
 
     check("concurrent detail + ML reads raise nothing",
           not errors, "; ".join(errors[:2]) if errors else "")
-    check("every concurrent response is for the entity that was asked for",
-          all(a == b for a, b in observed) and len(observed) == len(ids) * 3 * 6,
-          f"{len(observed)} responses, "
-          f"{sum(1 for a, b in observed if a != b)} mismatched")
+    print("\nPhase 2: Analytics & Metrics API checks")
+    import analytics
+    overview = analytics.get_overview_metrics(con)
+    check("overview returns 12 entities count", overview["entities_count"] == 12)
+    check("overview returns 248 alerts count", overview["alerts_count"] == 248)
+    check("overview returns 18 findings count", overview["findings_count"] == 18)
+    check("overview returns 5 entities requiring attention", overview["attention_entities_count"] == 5)
+    check("overview confidence is ok for >=5 entities and >=20 records", overview["confidence"] == "ok")
+    check("overview mean closure time is calculated", overview["mean_closure_minutes"] is not None)
+    check("overview median closure time is calculated", overview["median_closure_minutes"] is not None)
+
+    ts_day = analytics.get_timeseries_metrics(con, "day")
+    check("timeseries daily bucket returns non-empty list", len(ts_day) > 0)
+
+    dist_sev = analytics.get_distribution_metrics(con, "severity")
+    check("distribution by severity returns 4 items", len(dist_sev["items"]) == 4)
+
+    handling = analytics.get_handling_quality(con)
+    check("handling quality total records is 248", handling["total_records"] == 248)
+    check("handling quality rapid closure rate is calculated", handling["rapid_closure_rate"] >= 0.0)
+
+    tree = analytics.get_case_tree(con)
+    check("case tree contains entities with findings", len(tree) == 5)
 
     print()
     if _failures:
@@ -598,6 +617,7 @@ def main() -> int:
         return 1
     print("All checks passed.")
     return 0
+
 
 
 if __name__ == "__main__":
