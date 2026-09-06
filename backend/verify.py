@@ -395,10 +395,11 @@ def main() -> int:
           len(ml_corroboration(con, set(ids))) >= len(ml_entities),
           "unrestricted gate yields at least as many")
 
-    print("\n10. Determinism (two independent builds must be identical)")
     con2 = db.connect(os.path.join(tempfile.mkdtemp(), "verify2.duckdb"))
-    seed(con2)
+    e2, r2 = ingest.parse(csv_text, "regression-dataset.csv")
+    ingest.load(con2, e2, r2, "regression-dataset.csv")
     run_detection(con2)
+
     snapshot = ("SELECT finding_id, entity_id, rule_id, weight, explanation, "
                 "evidence_record_ids FROM findings ORDER BY finding_id")
     check("findings identical across builds",
