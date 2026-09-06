@@ -98,6 +98,8 @@ export interface UploadResult {
   entities_loaded: number;
   records_loaded: number;
   findings_generated: number;
+  /** Every column the parser translated or ignored. Empty for a canonical file. */
+  mapping_notes: string[];
 }
 
 /** One feature of one entity, with the peer-group figure it is judged against. */

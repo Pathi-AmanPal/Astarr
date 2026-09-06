@@ -16,7 +16,9 @@ import math
 import statistics
 
 import config
+import ingest
 import ml
+import rules_sql
 from ml import ML_RULE_ID, ml_corroboration
 
 EXECUTION_GAP = "EXECUTION_GAP"
@@ -95,6 +97,23 @@ def _fetch_records(con) -> list[dict]:
     return [dict(zip(cols, r)) for r in rows]
 
 
+def _by_entity(records: list[dict]) -> dict[str, list[dict]]:
+    """Group records by entity in one pass.
+
+    Three rules previously scanned the whole record list once per entity, which is
+    O(records x entities). Measured on 100,000 records: 2.8s at 20 entities, 8.4s at
+    500, 26.9s at 2,000 -- and "a growing number of CSEs" is the axis this tool exists
+    to scale along. Bucketing once makes each rule O(records) again.
+
+    Insertion order is preserved and the caller iterates `entity_ids` in sorted order,
+    so finding order -- and therefore every finding id -- is unchanged.
+    """
+    buckets: dict[str, list[dict]] = {}
+    for r in records:
+        buckets.setdefault(r["entity_id"], []).append(r)
+    return buckets
+
+
 def _entity_cohorts(con) -> dict[str, str]:
     """entity_id -> its cohort key. Column name is allowlisted at import."""
     rows = con.execute(
@@ -161,11 +180,10 @@ def eg002(records: list[dict]) -> list[dict]:
 # --- EG-003 ----------------------------------------------------------------------
 def eg003(records: list[dict], entity_ids: list[str]) -> list[dict]:
     out = []
+    buckets = _by_entity(records)
     for entity_id in entity_ids:
         groups: dict[str, list[str]] = {}
-        for r in records:
-            if r["entity_id"] != entity_id:
-                continue
+        for r in buckets.get(entity_id, ()):
             notes = r["investigation_notes"]
             if notes is None or not notes.strip():
                 continue  # missing notes are not duplicates
@@ -217,10 +235,11 @@ def eg004(records: list[dict]) -> list[dict]:
 # --- EG-005 ----------------------------------------------------------------------
 def eg005(records: list[dict], entity_ids: list[str]) -> list[dict]:
     out = []
+    buckets = _by_entity(records)
     for entity_id in entity_ids:
         groups: dict[str, list[str]] = {}
-        for r in records:
-            if r["entity_id"] != entity_id or r["closed_at"] is None:
+        for r in buckets.get(entity_id, ()):
+            if r["closed_at"] is None:
                 continue
             minute = r["closed_at"].replace(second=0, microsecond=0)
             groups.setdefault(minute.isoformat(sep=" "), []).append(r["record_id"])
@@ -270,10 +289,28 @@ def ns001(records: list[dict], entity_ids: list[str],
     Comparing against a group too small to have a distribution is not a peer comparison,
     it is a number that looks like one.
     """
-    cohorts = cohorts or {}
     counts = {eid: 0 for eid in entity_ids}
     for r in records:
         counts[r["entity_id"]] = counts.get(r["entity_id"], 0) + 1
+
+    def evidence(entity_id: str) -> list[str]:
+        return sorted(r["record_id"] for r in records if r["entity_id"] == entity_id)
+
+    return ns001_from_counts(counts, entity_ids, cohorts, evidence)
+
+
+def ns001_from_counts(counts: dict[str, int], entity_ids: list[str],
+                      cohorts: dict[str, str] | None,
+                      evidence) -> list[dict]:
+    """NS-001 over pre-computed counts.
+
+    This rule never needed the records -- only how many each entity filed, and the ids
+    to attach as evidence when it fires. Taking counts directly lets the caller compute
+    them in SQL, so a million-record dataset costs one aggregate rather than a million
+    Python dicts. `ns001` above is the same rule with the counting done in Python, kept
+    because it is what the regression suite drives directly.
+    """
+    cohorts = cohorts or {}
 
     global_mean, _global_std, global_threshold = _baseline(
         [counts[eid] for eid in entity_ids]
@@ -309,7 +346,7 @@ def ns001(records: list[dict], entity_ids: list[str],
             )
 
         if counts[entity_id] < threshold:
-            ids = sorted(r["record_id"] for r in records if r["entity_id"] == entity_id)
+            ids = evidence(entity_id)
             out.append({
                 "entity_id": entity_id,
                 "rule_id": "NS-001",
@@ -341,14 +378,20 @@ def ns002(records: list[dict], entity_ids: list[str]) -> list[dict]:
     min_reporting = ns002_min_reporting(len(entity_ids))
     expected = [c for c in all_categories if reporting[c] >= min_reporting]
 
+    buckets = _by_entity(records)
+
     out = []
     for entity_id in entity_ids:
         if counts[entity_id] < NS002_MIN_RECORDS:
             continue  # too few alerts for absence to mean anything
+        # Hoisted out of the category loop below: the evidence for a blind spot is the
+        # entity's whole record set, which does not vary by category. Recomputing it per
+        # missing category made this O(records x entities x categories).
+        entity_record_ids = sorted(r["record_id"] for r in buckets.get(entity_id, ()))
         for category in expected:
             if category in by_entity[entity_id]:
                 continue
-            ids = sorted(r["record_id"] for r in records if r["entity_id"] == entity_id)
+            ids = entity_record_ids
             out.append({
                 "entity_id": entity_id,
                 "rule_id": "NS-002",
@@ -366,8 +409,14 @@ def ns002(records: list[dict], entity_ids: list[str]) -> list[dict]:
 
 
 # --- Pipeline --------------------------------------------------------------------
-def run_detection(con) -> int:
-    """Recompute every finding from scratch. Returns the number generated."""
+def run_detection_python(con) -> int:
+    """The original, record-in-memory implementation.
+
+    Retained as the executable specification for `run_detection`. It reads every record
+    into Python, which is exactly the cost the SQL path exists to avoid, so it is not
+    used in production -- but it is the definition of what the rules mean, and
+    `verify.py` asserts the two produce byte-identical findings on every run.
+    """
     records = _fetch_records(con)
     entity_ids = _entity_ids(con)
     cohorts = _entity_cohorts(con)
@@ -381,45 +430,105 @@ def run_detection(con) -> int:
     findings += ns001(records, entity_ids, cohorts)
     findings += ns002(records, entity_ids)
 
-    # ML corroboration runs LAST and reads what the deterministic engine produced.
-    # The gate is the whole point: an entity the rules found clean can never receive
-    # an ML finding, however anomalous the model considers it.
     already_flagged = {f["entity_id"] for f in findings}
     analysis = ml.analyse(con)
     findings += ml_corroboration(con, already_flagged, analysis)
 
-    # Persist the model's working alongside its conclusion. Same fit, so the profile
-    # on screen is provably the one the finding was computed from.
+    _write_ml_profile(con, analysis, already_flagged)
+
+    con.execute("DELETE FROM findings")
+    rows = [
+        (
+            f"F-{i:04d}",
+            f["entity_id"],
+            f["rule_id"],
+            f["finding_type"],
+            WEIGHTS[f["rule_id"]],
+            f["title"],
+            f["explanation"],
+            ",".join(f["evidence_record_ids"]),
+        )
+        for i, f in enumerate(findings, start=1)
+    ]
+    if rows:
+        ingest.bulk_insert_findings(con, rows)
+    return len(findings)
+
+
+def _write_ml_profile(con, analysis, already_flagged) -> None:
+    """Persist the model's working alongside its conclusion. Same fit, so the profile
+    on screen is provably the one the finding was computed from.
+
+    Bounded by entity count times four features, never by dataset size.
+    """
     con.execute("DELETE FROM ml_profile")
     profile = ml.profile_rows(analysis, already_flagged)
     if profile:
-        con.executemany(
-            """
-            INSERT INTO ml_profile (entity_id, feature, label, value, dataset_mean,
-                                    deviation, contribution, method, anomalous,
-                                    corroborated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            profile,
-        )
+        ingest.bulk_insert_ml_profile(con, profile)
+
+
+def run_detection(con) -> int:
+    """Recompute every finding from scratch. Returns the number generated.
+
+    Set-based: each deterministic rule is an INSERT ... SELECT, so neither a record nor
+    a finding is ever materialised as a Python object. Peak memory stops tracking
+    dataset size and becomes DuckDB's buffer pool.
+
+    Rule order is the same as `run_detection_python` and each statement carries the
+    ORDER BY that reproduces that rule's emission order, so finding ids match exactly.
+    """
+    entity_ids = _entity_ids(con)
+    cohorts = _entity_cohorts(con)
 
     con.execute("DELETE FROM findings")
-    for i, f in enumerate(findings, start=1):
-        con.execute(
-            """
-            INSERT INTO findings (finding_id, entity_id, rule_id, finding_type, weight,
-                                  title, explanation, evidence_record_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                f"F-{i:04d}",
-                f["entity_id"],
-                f["rule_id"],
-                f["finding_type"],
-                WEIGHTS[f["rule_id"]],
-                f["title"],
-                f["explanation"],
+
+    written = 0
+    written += rules_sql.eg001(con, written)
+    written += rules_sql.eg002(con, written)
+    written += rules_sql.eg003(con, written)
+    written += rules_sql.eg004(con, written)
+    written += rules_sql.eg005(con, written)
+
+    # NS-001 stays in Python: it reasons over one number per entity, and the peer-cohort
+    # gate is a judgement the SQL would obscure rather than accelerate. Its cost is
+    # bounded by entity count, not by dataset size.
+    counts = rules_sql.entity_counts(con)
+    ns001_findings = ns001_from_counts(
+        counts, entity_ids, cohorts, lambda eid: rules_sql.entity_evidence(con, eid)
+    )
+    if ns001_findings:
+        ingest.bulk_insert_findings(con, [
+            (
+                f"F-{written + i:04d}",
+                f["entity_id"], f["rule_id"], f["finding_type"],
+                WEIGHTS[f["rule_id"]], f["title"], f["explanation"],
                 ",".join(f["evidence_record_ids"]),
-            ],
-        )
-    return len(findings)
+            )
+            for i, f in enumerate(ns001_findings, start=1)
+        ])
+        written += len(ns001_findings)
+
+    written += rules_sql.ns002(con, written, entity_ids)
+
+    # ML corroboration runs LAST and reads what the deterministic engine produced.
+    # The gate is the whole point: an entity the rules found clean can never receive
+    # an ML finding, however anomalous the model considers it.
+    already_flagged = {
+        r[0] for r in con.execute("SELECT DISTINCT entity_id FROM findings").fetchall()
+    }
+    analysis = ml.analyse(con)
+    ml_findings = ml_corroboration(con, already_flagged, analysis)
+    if ml_findings:
+        ingest.bulk_insert_findings(con, [
+            (
+                f"F-{written + i:04d}",
+                f["entity_id"], f["rule_id"], f["finding_type"],
+                WEIGHTS[f["rule_id"]], f["title"], f["explanation"],
+                ",".join(f["evidence_record_ids"]),
+            )
+            for i, f in enumerate(ml_findings, start=1)
+        ])
+        written += len(ml_findings)
+
+    _write_ml_profile(con, analysis, already_flagged)
+    return written

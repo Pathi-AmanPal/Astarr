@@ -1,12 +1,16 @@
-/** Screen 3 — the source records behind one finding, on its own route so that
-    browser back serves PRD Section 10 step 4. The full record set renders at
-    scale rather than paginating: for a Negative Space finding, the shortness of
-    the table is the evidence. */
+/** Screen 3 — the records one finding was computed from.
+ *
+ *  On its own route, so browser-back is the way out and the trail from score to
+ *  finding to record is a real navigation history rather than a disclosure state.
+ *  The full record set renders rather than paginating: for a negative-space
+ *  finding, the shortness of the table is the evidence.
+ */
 
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { AlertRecord, ApiError, Evidence, getEvidence } from "../api";
+import Crumbs from "../components/Crumbs";
 import { Loading, ErrorState, NotFound } from "../components/States";
 import { findingRef } from "../workpaper";
 
@@ -19,8 +23,8 @@ function minutes(value: number | null): string {
   return value === null ? "—" : String(value);
 }
 
-/** Flags the fields a judge is asked to eyeball — but only for the rules that
-    actually key on them. A red mark on `escalated` under a volume finding would
+/** Marks the fields a reader is being asked to eyeball — but only for the rules
+    that actually key on them. A mark on `escalated` under a volume finding would
     imply a fault the finding does not claim. */
 function Row({ record, ruleId }: { record: AlertRecord; ruleId: string }) {
   const flagsClosure = ruleId === "EG-001";
@@ -40,21 +44,25 @@ function Row({ record, ruleId }: { record: AlertRecord; ruleId: string }) {
       <td className="num">{timestamp(record.closed_at)}</td>
       <td className="num">
         {fastClose ? (
-          <span className="ringed">{minutes(record.closure_time_minutes)}</span>
+          <span className="flag">{minutes(record.closure_time_minutes)}</span>
         ) : (
           minutes(record.closure_time_minutes)
         )}
       </td>
       <td>
         {!record.escalated && flagsEscalation ? (
-          <span className="ringed">No</span>
+          <span className="flag">No</span>
+        ) : record.escalated ? (
+          "Yes"
         ) : (
-          record.escalated ? "Yes" : "No"
+          "No"
         )}
       </td>
       <td>{record.disposition}</td>
       <td className="notes">
-        {record.investigation_notes ?? <span className="muted">— none recorded —</span>}
+        {record.investigation_notes ?? (
+          <span className="muted">none recorded</span>
+        )}
       </td>
     </tr>
   );
@@ -79,13 +87,11 @@ export default function EvidenceView() {
     void load();
   }, [load]);
 
-  const backLink = evidence ? `/entities/${evidence.entity_id}` : "/";
-
   if (error?.status === 404) {
     return (
       <>
-        <Link className="crumb" to="/">← All entities</Link>
-        <NotFound message="Finding not found" />
+        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Not found" }]} />
+        <NotFound message="No such finding" />
       </>
     );
   }
@@ -93,7 +99,7 @@ export default function EvidenceView() {
   if (error) {
     return (
       <>
-        <Link className="crumb" to="/">← All entities</Link>
+        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Evidence" }]} />
         <ErrorState message={error.message} onRetry={() => void load()} backTo />
       </>
     );
@@ -102,43 +108,56 @@ export default function EvidenceView() {
   if (!evidence) {
     return (
       <>
-        <Link className="crumb" to="/">← All entities</Link>
-        <div style={{ marginTop: 18 }}>
-          <Loading rows={5} label="Loading evidence" />
-        </div>
+        <Crumbs trail={[{ label: "Ranking", to: "/" }, { label: "Evidence" }]} />
+        <Loading rows={5} label="Loading evidence" />
       </>
     );
   }
 
   return (
     <>
-      <Link className="crumb" to={backLink}>← {evidence.entity_name}</Link>
+      <Crumbs
+        trail={[
+          { label: "Ranking", to: "/" },
+          { label: evidence.entity_name, to: `/entities/${evidence.entity_id}` },
+          { label: evidence.finding_id },
+        ]}
+      />
 
-      <div className="detail-head">
+      <div className="head">
         <div>
-          <h1 className="detail-title">{evidence.title}</h1>
-          <p className="detail-meta">
-            <span className="wp-ref wp-ref--lead">
+          <h1 className="hd">{evidence.title}</h1>
+          <p className="head__meta">
+            <span className="tag tag--ref">
               {findingRef(evidence.entity_id, evidence.rule_id)}
             </span>
-            <span className="entity-id">{evidence.rule_id}</span> ·{" "}
-            {evidence.finding_id} · {evidence.weight} pts · {evidence.entity_name}
+            <span className="tag">{evidence.rule_id}</span>
+            <span className="tag">{evidence.finding_id}</span>
+            {evidence.weight} pts · {evidence.entity_name}
           </p>
         </div>
       </div>
 
-      <p className="evidence-lead">{evidence.explanation}</p>
+      <p className="lead">{evidence.explanation}</p>
 
-      <h2 className="section-title">
-        Source records
-        <span className="rule-card__count"> ({evidence.records.length})</span>
-      </h2>
-      <p className="section-note">
+      <div className="sect">
+        <h2 className="sect__title">Source records</h2>
+        <span className="sect__n">
+          {evidence.records.length}{" "}
+          {evidence.records.length === 1 ? "record" : "records"}
+        </span>
+      </div>
+      <p className="sect__note">
         Every record the finding was computed from, exactly as held in the dataset.
+        Where a rule keys on a particular field, that field is marked on the rows it
+        read.
       </p>
 
-      <div className="table-scroll">
+      <div className="sheet sheet--scroll">
         <table className="records">
+          <caption className="sr-only">
+            Alert records underlying finding {evidence.finding_id}.
+          </caption>
           <thead>
             <tr>
               <th scope="col">Record</th>
@@ -160,43 +179,42 @@ export default function EvidenceView() {
         </table>
       </div>
 
-      <div className="stamp-row">
-        <span className="stamp">
-          <span className="stamp__main">Verified against source records</span>
-          <span className="stamp__sub">
-            SAT-SA · {findingRef(evidence.entity_id, evidence.rule_id)} ·{" "}
-            {evidence.records.length}{" "}
-            {evidence.records.length === 1 ? "record" : "records"}
-          </span>
+      <p className="foot">
+        <span className="foot__mark">✓ verified against source records</span>
+        <span>
+          SAT-SA · {findingRef(evidence.entity_id, evidence.rule_id)} ·{" "}
+          {evidence.records.length}{" "}
+          {evidence.records.length === 1 ? "record" : "records"}
         </span>
-      </div>
+      </p>
 
       {evidence.rule_id === "ML-001" && (
-        <p className="footnote">
-          Corroborating signal only — evaluated solely because deterministic rules already
-          raised a finding for this entity, and never the sole basis for one. The model is
-          an unsupervised Isolation Forest over a small peer group; it has not been
-          validated or measured for accuracy, and the records below are the entity’s full
-          alert history rather than a model-selected subset.
+        <p className="note">
+          Corroborating signal only — evaluated solely because deterministic rules
+          already raised a finding for this entity, and never the sole basis for
+          one. The model is an unsupervised Isolation Forest over a small peer
+          group; it has not been validated or measured for accuracy, and the records
+          above are the entity's full alert history rather than a model-selected
+          subset.
         </p>
       )}
-      {/* NS-001 now performs a peer-cohort comparison where the cohort is
-          statistically valid, and says in its own explanation which baseline it used
-          and why. This footnote must not contradict that sentence on the same screen,
-          so it explains the gate rather than claiming the feature is absent. */}
+      {/* NS-001 performs a peer-cohort comparison where the cohort is statistically
+          valid, and says in its own explanation which baseline it used. This note
+          must not contradict that sentence on the same screen, so it explains the
+          gate rather than claiming the feature is absent. */}
       {evidence.rule_id === "NS-001" && (
-        <p className="footnote">
-          Peer-cohort comparison is used only where a cohort is large enough to support
-          it (at least 5 entities). Where it is not, the rule falls back to the global
-          dataset baseline and states so above — a cohort of one has no spread to
-          measure against, so a threshold drawn from it would be arithmetic rather than
-          evidence.
+        <p className="note">
+          Peer-cohort comparison is used only where a cohort is large enough to
+          support it (at least 5 entities). Where it is not, the rule falls back to
+          the global dataset baseline and says so above — a cohort of one has no
+          spread to measure against, so a threshold drawn from it would be
+          arithmetic rather than evidence.
         </p>
       )}
       {evidence.rule_id === "NS-002" && (
-        <p className="footnote">
-          Category coverage is compared against the other entities in this dataset only —
-          peer-cohort grouping planned for next phase.
+        <p className="note">
+          Category coverage is compared against the other entities in this dataset
+          only — peer-cohort grouping is planned for the next phase.
         </p>
       )}
     </>

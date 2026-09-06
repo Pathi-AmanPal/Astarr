@@ -62,8 +62,11 @@ Established over the Phase 2 build and worth keeping:
   editing it by hand.
 - Impeccable's hooks are opt-in (`.claude/settings.impeccable-hooks.json`), not active.
   Don't enable them without asking — they run on every Edit/Write.
-- `PRODUCT.md` exists and is the product record, including every Phase 2 amendment;
-  `DESIGN.md` still does not. Read `PRODUCT.md` before changing product behaviour.
+- `PRODUCT.md` is the product record, including every Phase 2 amendment. Read it before
+  changing product behaviour. `DESIGN.md` is the *current* visual direction (dark
+  instrument face, rebuilt 2026-09-06); the retired v1 audit-paper direction is archived
+  at `docs/design/v1-audit-working-paper.md`. An earlier version of this file claimed
+  DESIGN.md did not exist -- it did, and acting on that nearly lost it.
 - Rule weights, thresholds and tier weights live in `backend/rules.yaml`, never in code.
   The loader has no defaults — a missing key raises at startup on purpose.
 - Findings are **not** recomputed when rules change: startup seeds only when the

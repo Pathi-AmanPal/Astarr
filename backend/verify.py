@@ -563,6 +563,254 @@ def main() -> int:
     check("fresh DB yields 0 findings", fresh_con.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0)
 
 
+    print("\nThe SQL engine and the Python rules agree exactly")
+    # detection.run_detection is set-based; run_detection_python is the same rules with
+    # every record in memory. The Python one is the specification, and these assert the
+    # SQL one has not drifted from it -- not "equivalent", identical: same finding ids,
+    # same order, same explanation strings, same evidence lists.
+    import detection as _det
+
+    snap = ("SELECT finding_id, entity_id, rule_id, finding_type, weight, title, "
+            "explanation, evidence_record_ids FROM findings ORDER BY finding_id")
+
+    con_py = db.connect(os.path.join(tempfile.mkdtemp(), "engine_py.duckdb"))
+    seed(con_py)
+    n_py = _det.run_detection_python(con_py)
+    con_sql = db.connect(os.path.join(tempfile.mkdtemp(), "engine_sql.duckdb"))
+    seed(con_sql)
+    n_sql = _det.run_detection(con_sql)
+
+    check("both engines generate the same number of findings", n_py == n_sql,
+          f"python {n_py}, sql {n_sql}")
+    rows_py = con_py.execute(snap).fetchall()
+    rows_sql = con_sql.execute(snap).fetchall()
+    check("every finding is byte-identical between the two engines", rows_py == rows_sql,
+          f"{sum(1 for a, b in zip(rows_py, rows_sql) if a != b)} rows differ")
+    check("both engines rank entities identically",
+          ranked_entities(con_py) == ranked_entities(con_sql))
+
+    # The finding-id sequence crosses 9,999, where DuckDB's lpad truncates a longer
+    # string and Python's :04d does not. That collided on the primary key at 10,000
+    # findings and was invisible on any small dataset.
+    wide = ["record_id,entity_id,entity_name,sector,asset_id,severity,category,"
+            "opened_at,closed_at,escalated,disposition,investigation_notes"]
+    from datetime import datetime as _dt, timedelta as _td
+    base = _dt(2026, 5, 1, 8, 0, 0)
+    for i in range(12000):
+        eid = f"E-{i % 3}"
+        op = base + _td(minutes=i)
+        # every row is a CRITICAL with no escalation, so EG-002 fires on all of them
+        wide.append(f"W-{i:06d},{eid},Ent {i % 3},Sector,A-1,CRITICAL,Malware,"
+                    f"{op.isoformat()},{(op + _td(minutes=30)).isoformat()},false,"
+                    f"TRUE_POSITIVE,note {i}")
+    con_wide = db.connect(os.path.join(tempfile.mkdtemp(), "wide.duckdb"))
+    ew, rw = ingest.parse_csv("\n".join(wide) + "\n")
+    ingest.load(con_wide, ew, rw, "wide.csv")
+    n_wide = _det.run_detection(con_wide)
+    check("finding ids stay unique past 9,999 (lpad truncation)",
+          con_wide.execute("SELECT COUNT(DISTINCT finding_id) FROM findings").fetchone()[0]
+          == n_wide, f"{n_wide} findings")
+    # Compared as a set, not in query order: finding_id sorts lexicographically, so
+    # F-10000 precedes F-1001 and an ordered comparison would fail on a correct sequence.
+    all_ids = {r[0] for r in con_wide.execute("SELECT finding_id FROM findings").fetchall()}
+    check("...and the sequence is exactly F-0001..F-N with no gaps or repeats",
+          all_ids == {f"F-{i:04d}" for i in range(1, n_wide + 1)},
+          f"{len(all_ids)} distinct of {n_wide}")
+
+    print("\nStreaming ingestion matches materialised ingestion")
+    # stage_csv validates one row at a time and writes straight to disk; parse_csv holds
+    # the dataset. They must accept and reject exactly the same files.
+    staged_path = os.path.join(tempfile.mkdtemp(), "staged.csv")
+    ents_stream, n_stream = ingest.stage_csv(ingest.TEMPLATE_CSV, staged_path)
+    ents_mat, recs_mat = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    check("streaming finds the same entities", ents_stream == ents_mat)
+    check("streaming finds the same record count", n_stream == len(recs_mat))
+
+    con_stream = db.connect(os.path.join(tempfile.mkdtemp(), "stream.duckdb"))
+    ingest.load_streaming(con_stream, ingest.TEMPLATE_CSV, "template.csv")
+    con_mat = db.connect(os.path.join(tempfile.mkdtemp(), "mat.duckdb"))
+    ingest.load(con_mat, ents_mat, recs_mat, "template.csv")
+    cols = ", ".join(ingest.RECORD_COLUMNS)
+    check("the loaded rows are identical either way",
+          con_stream.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall()
+          == con_mat.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall())
+
+    # A handle, not a string: the path that keeps peak memory flat.
+    handle_path = os.path.join(tempfile.mkdtemp(), "from_handle.csv")
+    with open(handle_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(ingest.TEMPLATE_CSV)
+    con_handle = db.connect(os.path.join(tempfile.mkdtemp(), "handle.duckdb"))
+    with open(handle_path, "r", encoding="utf-8-sig", newline="") as fh:
+        ingest.load_streaming(con_handle, fh, "from_handle.csv")
+    check("streaming from a file handle loads identically",
+          con_handle.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall()
+          == con_mat.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall())
+
+    # The property that makes streaming safe: a file rejected halfway must leave the
+    # previously loaded dataset untouched, not half-replaced.
+    before_rows = con_mat.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    bad = ingest.TEMPLATE_CSV + ("BAD-1,CSE-01,One,Energy,A-1,NOTASEVERITY,Malware,"
+                                 "2026-01-05T08:00:00,,false,TRUE_POSITIVE,,\n")
+    try:
+        ingest.load_streaming(con_mat, bad, "bad.csv")
+        check("a rejected streaming upload leaves the dataset intact", False,
+              "the bad file was accepted")
+    except ingest.IngestError:
+        check("a rejected streaming upload leaves the dataset intact",
+              con_mat.execute("SELECT COUNT(*) FROM records").fetchone()[0] == before_rows
+              and db.dataset_meta(con_mat) is not None)
+
+    print("\nBulk insert preserves types and NULLs")
+    # Records reach DuckDB through a staged CSV rather than one INSERT per row (198x
+    # faster, measured). CSV has no type system, so the risk this trades for speed is
+    # a value arriving as the wrong type or an empty string arriving as "" instead of
+    # NULL. These assert the round-trip, not the speed.
+    con4 = db.connect(os.path.join(tempfile.mkdtemp(), "verify4.duckdb"))
+    typed = (
+        "record_id,entity_id,entity_name,sector,asset_id,severity,category,opened_at,"
+        "closed_at,escalated,disposition,investigation_notes,closure_time_minutes\n"
+        # closed, escalated, notes present
+        "R-1,E-1,One,Energy,A-1,HIGH,Malware,2026-01-05T08:00:00,2026-01-05T10:30:00,true,TRUE_POSITIVE,Checked.,150\n"
+        # still open: no closed_at, no notes, not escalated
+        "R-2,E-2,Two,Telecom,A-2,LOW,Phishing,2026-01-05T09:00:00,,false,BENIGN,,\n"
+    )
+    e4, r4 = ingest.parse_csv(typed)
+    ingest.load(con4, e4, r4, "typed.csv")
+
+    row = con4.execute(
+        "SELECT opened_at, closed_at, escalated, investigation_notes, "
+        "closure_time_minutes FROM records WHERE record_id = 'R-1'"
+    ).fetchone()
+    check("a timestamp survives as TIMESTAMP, not text",
+          isinstance(row[0], _dt) and row[0] == _dt(2026, 1, 5, 8, 0), str(row[0]))
+    check("a boolean survives as BOOLEAN", row[2] is True, repr(row[2]))
+    check("a float survives as DOUBLE", row[4] == 150.0, repr(row[4]))
+
+    open_row = con4.execute(
+        "SELECT closed_at, investigation_notes, closure_time_minutes FROM records "
+        "WHERE record_id = 'R-2'"
+    ).fetchone()
+    check("an absent closed_at is NULL, not an empty string", open_row[0] is None,
+          repr(open_row[0]))
+    check("absent notes are NULL, not an empty string", open_row[1] is None,
+          repr(open_row[1]))
+    check("an underivable closure time is NULL, not 0", open_row[2] is None,
+          repr(open_row[2]))
+    check("an unescalated row reads False, not NULL",
+          con4.execute("SELECT escalated FROM records WHERE record_id='R-2'"
+                       ).fetchone()[0] is False)
+
+    # A comma and a quote in free text are the classic staging bug: written unescaped,
+    # they shift every following column by one.
+    tricky = typed + ('R-3,E-1,One,Energy,A-3,LOW,Malware,2026-01-06T08:00:00,'
+                      '2026-01-06T09:00:00,false,BENIGN,"Comma, and ""quotes"" inside",60\n')
+    e5, r5 = ingest.parse_csv(tricky)
+    con5 = db.connect(os.path.join(tempfile.mkdtemp(), "verify5.duckdb"))
+    ingest.load(con5, e5, r5, "tricky.csv")
+    check("a comma and quotes inside free text do not shift columns",
+          con5.execute("SELECT investigation_notes, closure_time_minutes FROM records "
+                       "WHERE record_id='R-3'").fetchone()
+          == ('Comma, and "quotes" inside', 60.0))
+
+    # A newline inside a quoted field is the same bug one level nastier.
+    multiline = typed + ('R-4,E-1,One,Energy,A-4,LOW,Malware,2026-01-07T08:00:00,'
+                         '2026-01-07T09:00:00,false,BENIGN,"Line one\nline two",60\n')
+    e6, r6 = ingest.parse_csv(multiline)
+    con6 = db.connect(os.path.join(tempfile.mkdtemp(), "verify6.duckdb"))
+    ingest.load(con6, e6, r6, "multiline.csv")
+    check("a newline inside a quoted field survives the round-trip",
+          con6.execute("SELECT investigation_notes FROM records WHERE record_id='R-4'"
+                       ).fetchone()[0] == "Line one\nline two")
+    check("...and the row count is still correct",
+          con6.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3)
+
+    print("\nSchema normalisation: a messy export loads identically")
+    # The tool ingests exports from many CSEs, and no two of them name their columns the
+    # same way. The parser maps them onto the canonical schema -- but a mapping that is
+    # silent is worse than a rejection, because a column read as the wrong field produces
+    # findings that are confidently wrong. So: same rows in, same rows out, and every
+    # substitution reported.
+    canonical_rows = ingest.TEMPLATE_CSV.strip().split("\n")
+    messy_header = ("Alert ID,Org_ID,Organisation,Industry,Hostname,Priority,Alert Type,"
+                    "Created At,Resolved At,Escalated?,Resolution,Analyst Notes,TTR,"
+                    "weird_extra")
+    messy = [messy_header] + [row + ",junk" for row in canonical_rows[1:]]
+    notes_messy: list[str] = []
+    e_messy, r_messy = ingest.parse_csv("\n".join(messy) + "\n", notes_messy)
+    e_canon, r_canon = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    check("a file with 13 non-standard headers loads the same records",
+          r_messy == r_canon, f"{len(r_messy)} vs {len(r_canon)} rows")
+    check("...and the same entities", e_messy == e_canon)
+    check("...and every substitution is reported",
+          len(notes_messy) >= 13, f"{len(notes_messy)} notes")
+    check("...including the column it ignored",
+          any("weird_extra" in n for n in notes_messy),
+          "; ".join(notes_messy[-1:]))
+
+    # A canonical file must report nothing. A banner that appears on every upload is a
+    # banner nobody reads, which defeats the point of reporting the mapping at all.
+    notes_clean: list[str] = []
+    ingest.parse_csv(ingest.TEMPLATE_CSV, notes_clean)
+    check("a canonical file reports no substitutions", notes_clean == [],
+          "; ".join(notes_clean))
+
+    # Vendor severity and disposition scales. P1/Sev1/1 all mean CRITICAL to a
+    # supervisor, and refusing them means refusing most real exports.
+    scales = ("record_id,entity_id,entity_name,sector,asset_id,priority,category,"
+              "opened_at,resolution\n"
+              "S-1,E-1,One,Energy,A-1,P1,Malware,2026-01-05T08:00:00,TP\n"
+              "S-2,E-1,One,Energy,A-1,Sev 3,Malware,2026-01-05T09:00:00,FP\n"
+              "S-3,E-2,Two,Energy,A-2,low,Malware,2026-01-05T10:00:00,No Action Required\n"
+              "S-4,E-2,Two,Energy,A-2,4,Malware,2026-01-05T11:00:00,Confirmed\n")
+    _es, rs = ingest.parse_csv(scales)
+    check("vendor severity scales map onto the four the rules use",
+          [r[3] for r in rs] == ["CRITICAL", "MEDIUM", "LOW", "HIGH"],
+          str([r[3] for r in rs]))
+    check("vendor resolution codes map onto the three EG-004 tests",
+          [r[8] for r in rs] == ["TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN",
+                                 "TRUE_POSITIVE"],
+          str([r[8] for r in rs]))
+
+    # Two columns claiming one field is the case where guessing would be indefensible:
+    # either could be right and the tool has no way to tell. It stops and names both.
+    ambiguous = ("record_id,entity_id,entity_name,sector,asset_id,severity,priority,"
+                 "category,opened_at,disposition\n"
+                 "A-1,E-1,One,Energy,A-1,HIGH,P1,Malware,2026-01-05T08:00:00,BENIGN\n")
+    try:
+        ingest.parse_csv(ambiguous)
+        check("two columns claiming 'severity' is refused", False, "it was accepted")
+    except ingest.IngestError as exc:
+        check("two columns claiming 'severity' is refused", True)
+        check("...and the error names both columns",
+              "severity" in exc.errors[0] and "priority" in exc.errors[0],
+              exc.errors[0])
+
+    # A column that maps to nothing is still a missing required column, and the error
+    # has to say which spellings would have worked -- otherwise the operator is guessing
+    # at the guesser.
+    unmappable = ("record_id,entity_id,entity_name,sector,asset_id,severity,category,"
+                  "opened_at,xyzzy\n"
+                  "U-1,E-1,One,Energy,A-1,HIGH,Malware,2026-01-05T08:00:00,BENIGN\n")
+    try:
+        ingest.parse_csv(unmappable)
+        check("an unmappable required column is still refused", False, "it was accepted")
+    except ingest.IngestError as exc:
+        joined = " | ".join(exc.errors)
+        check("an unmappable required column is still refused",
+              "disposition" in exc.errors[0])
+        check("...and the error lists spellings that would have worked",
+              "verdict" in joined or "outcome" in joined, joined[:120])
+
+    # Streaming must map identically. It shares iter_validated_rows, and this asserts
+    # that it keeps sharing it.
+    messy_staged = os.path.join(tempfile.mkdtemp(), "messy.csv")
+    notes_stream: list[str] = []
+    ents_messy_s, n_messy_s = ingest.stage_csv("\n".join(messy) + "\n", messy_staged,
+                                               notes_stream)
+    check("streaming ingestion maps columns identically",
+          ents_messy_s == e_canon and n_messy_s == len(r_canon))
+    check("...and reports the same substitutions", notes_stream == notes_messy)
+
     print("\nConcurrent reads on the shared connection")
     # The detail screen fetches its findings and its ML profile at the same time, and
     # FastAPI runs sync endpoints on a threadpool -- so two requests hit one DuckDB
