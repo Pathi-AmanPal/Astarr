@@ -951,6 +951,14 @@ body {
   color: var(--exception);
 }
 
+/* An accepted upload that needed column translation is not an exception, and must not
+   borrow the exception's red. It is a notice: read it, confirm it, dismiss it. */
+.banner--info,
+.banner--info .banner__head {
+  border-color: var(--rule);
+  color: var(--ink);
+}
+
 .banner__list {
   margin: 10px 0 0;
   padding-left: 18px;

@@ -710,6 +710,93 @@ def main() -> int:
     check("...and the row count is still correct",
           con6.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3)
 
+    print("\nSchema normalisation: a messy export loads identically")
+    # The tool ingests exports from many CSEs, and no two of them name their columns the
+    # same way. The parser maps them onto the canonical schema -- but a mapping that is
+    # silent is worse than a rejection, because a column read as the wrong field produces
+    # findings that are confidently wrong. So: same rows in, same rows out, and every
+    # substitution reported.
+    canonical_rows = ingest.TEMPLATE_CSV.strip().split("\n")
+    messy_header = ("Alert ID,Org_ID,Organisation,Industry,Hostname,Priority,Alert Type,"
+                    "Created At,Resolved At,Escalated?,Resolution,Analyst Notes,TTR,"
+                    "weird_extra")
+    messy = [messy_header] + [row + ",junk" for row in canonical_rows[1:]]
+    notes_messy: list[str] = []
+    e_messy, r_messy = ingest.parse_csv("\n".join(messy) + "\n", notes_messy)
+    e_canon, r_canon = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    check("a file with 13 non-standard headers loads the same records",
+          r_messy == r_canon, f"{len(r_messy)} vs {len(r_canon)} rows")
+    check("...and the same entities", e_messy == e_canon)
+    check("...and every substitution is reported",
+          len(notes_messy) >= 13, f"{len(notes_messy)} notes")
+    check("...including the column it ignored",
+          any("weird_extra" in n for n in notes_messy),
+          "; ".join(notes_messy[-1:]))
+
+    # A canonical file must report nothing. A banner that appears on every upload is a
+    # banner nobody reads, which defeats the point of reporting the mapping at all.
+    notes_clean: list[str] = []
+    ingest.parse_csv(ingest.TEMPLATE_CSV, notes_clean)
+    check("a canonical file reports no substitutions", notes_clean == [],
+          "; ".join(notes_clean))
+
+    # Vendor severity and disposition scales. P1/Sev1/1 all mean CRITICAL to a
+    # supervisor, and refusing them means refusing most real exports.
+    scales = ("record_id,entity_id,entity_name,sector,asset_id,priority,category,"
+              "opened_at,resolution\n"
+              "S-1,E-1,One,Energy,A-1,P1,Malware,2026-01-05T08:00:00,TP\n"
+              "S-2,E-1,One,Energy,A-1,Sev 3,Malware,2026-01-05T09:00:00,FP\n"
+              "S-3,E-2,Two,Energy,A-2,low,Malware,2026-01-05T10:00:00,No Action Required\n"
+              "S-4,E-2,Two,Energy,A-2,4,Malware,2026-01-05T11:00:00,Confirmed\n")
+    _es, rs = ingest.parse_csv(scales)
+    check("vendor severity scales map onto the four the rules use",
+          [r[3] for r in rs] == ["CRITICAL", "MEDIUM", "LOW", "HIGH"],
+          str([r[3] for r in rs]))
+    check("vendor resolution codes map onto the three EG-004 tests",
+          [r[8] for r in rs] == ["TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN",
+                                 "TRUE_POSITIVE"],
+          str([r[8] for r in rs]))
+
+    # Two columns claiming one field is the case where guessing would be indefensible:
+    # either could be right and the tool has no way to tell. It stops and names both.
+    ambiguous = ("record_id,entity_id,entity_name,sector,asset_id,severity,priority,"
+                 "category,opened_at,disposition\n"
+                 "A-1,E-1,One,Energy,A-1,HIGH,P1,Malware,2026-01-05T08:00:00,BENIGN\n")
+    try:
+        ingest.parse_csv(ambiguous)
+        check("two columns claiming 'severity' is refused", False, "it was accepted")
+    except ingest.IngestError as exc:
+        check("two columns claiming 'severity' is refused", True)
+        check("...and the error names both columns",
+              "severity" in exc.errors[0] and "priority" in exc.errors[0],
+              exc.errors[0])
+
+    # A column that maps to nothing is still a missing required column, and the error
+    # has to say which spellings would have worked -- otherwise the operator is guessing
+    # at the guesser.
+    unmappable = ("record_id,entity_id,entity_name,sector,asset_id,severity,category,"
+                  "opened_at,xyzzy\n"
+                  "U-1,E-1,One,Energy,A-1,HIGH,Malware,2026-01-05T08:00:00,BENIGN\n")
+    try:
+        ingest.parse_csv(unmappable)
+        check("an unmappable required column is still refused", False, "it was accepted")
+    except ingest.IngestError as exc:
+        joined = " | ".join(exc.errors)
+        check("an unmappable required column is still refused",
+              "disposition" in exc.errors[0])
+        check("...and the error lists spellings that would have worked",
+              "verdict" in joined or "outcome" in joined, joined[:120])
+
+    # Streaming must map identically. It shares iter_validated_rows, and this asserts
+    # that it keeps sharing it.
+    messy_staged = os.path.join(tempfile.mkdtemp(), "messy.csv")
+    notes_stream: list[str] = []
+    ents_messy_s, n_messy_s = ingest.stage_csv("\n".join(messy) + "\n", messy_staged,
+                                               notes_stream)
+    check("streaming ingestion maps columns identically",
+          ents_messy_s == e_canon and n_messy_s == len(r_canon))
+    check("...and reports the same substitutions", notes_stream == notes_messy)
+
     print("\nConcurrent reads on the shared connection")
     # The detail screen fetches its findings and its ML profile at the same time, and
     # FastAPI runs sync endpoints on a threadpool -- so two requests hit one DuckDB

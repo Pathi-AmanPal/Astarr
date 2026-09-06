@@ -97,17 +97,152 @@ ALT-0003,CSE-02,Coastal Telecom,Telecom,WKS-221,MEDIUM,Phishing,2026-01-06T10:05
 """
 
 
+# ---------------------------------------------------------------------------------
+# Schema normalisation (2026-09-06)
+#
+# Every CSE exports a different layout. A tool that only accepts this module's exact
+# column names is one that every submission has to be hand-transformed for first, which
+# defeats "ingest structured data from multiple CSEs".
+#
+# So the parser maps. What it must never do is map *silently*: a column guessed wrong
+# produces findings that are wrong with nothing on screen admitting it, which is the
+# failure mode this whole tool exists to expose in other people's systems. Every
+# substitution is recorded and returned, and the UI shows it.
+#
+# Three rules keep the mapping honest:
+#   1. Aliases are exact matches after normalising case, spaces, hyphens and
+#      underscores -- never fuzzy, never edit-distance. "sev" maps because it is in the
+#      table, not because it looks a bit like "severity".
+#   2. Ambiguity is an error, not a coin toss. Two columns claiming the same canonical
+#      field stops the upload and names both.
+#   3. An unrecognised column is ignored and reported, never guessed at.
+# ---------------------------------------------------------------------------------
+
+def _key(name: str) -> str:
+    """Normalise a header for comparison: case, spaces, hyphens, underscores, dots."""
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+# Canonical field -> the header spellings seen in real SOC and ITSM exports.
+COLUMN_ALIASES: dict[str, list[str]] = {
+    "record_id": ["record_id", "alert_id", "id", "ticket_id", "case_id", "incident_id",
+                  "event_id", "alertid", "caseno", "case_number", "reference", "ref"],
+    "entity_id": ["entity_id", "org_id", "organisation_id", "organization_id", "cse_id",
+                  "customer_id", "tenant_id", "client_id", "company_id", "entity"],
+    "entity_name": ["entity_name", "org_name", "organisation", "organization", "cse_name",
+                    "customer", "client", "company", "tenant", "name"],
+    "sector": ["sector", "industry", "vertical", "domain", "segment", "sector_name"],
+    "asset_id": ["asset_id", "host", "hostname", "device", "device_id", "asset",
+                 "source_host", "src_host", "machine", "endpoint", "system"],
+    "severity": ["severity", "sev", "priority", "criticality", "urgency", "risk_level",
+                 "alert_severity", "level"],
+    "category": ["category", "alert_type", "type", "classification", "threat_type",
+                 "alert_category", "signature", "rule_name", "detection_type"],
+    "opened_at": ["opened_at", "created_at", "created", "opened", "detected_at",
+                  "first_seen", "alert_time", "timestamp", "event_time", "start_time",
+                  "reported_at", "raised_at"],
+    "closed_at": ["closed_at", "resolved_at", "closed", "resolution_time", "end_time",
+                  "completed_at", "last_seen", "closure_date"],
+    "escalated": ["escalated", "is_escalated", "escalation", "escalated_flag",
+                  "was_escalated", "escalation_flag"],
+    "disposition": ["disposition", "resolution", "outcome", "verdict", "status",
+                    "closure_code", "resolution_code", "classification_result",
+                    "final_status"],
+    "investigation_notes": ["investigation_notes", "notes", "comments", "analyst_notes",
+                            "resolution_notes", "description", "summary", "remarks",
+                            "work_notes", "investigation"],
+    "closure_time_minutes": ["closure_time_minutes", "ttr", "time_to_resolve",
+                             "resolution_minutes", "duration_minutes", "mttr",
+                             "handling_time", "time_to_close"],
+}
+
+_ALIAS_LOOKUP = {
+    _key(alias): canonical
+    for canonical, aliases in COLUMN_ALIASES.items()
+    for alias in aliases
+}
+
+# Severity scales differ per vendor. P1/SEV1/5 all mean the same thing to a supervisor,
+# and refusing them means refusing most real exports.
+SEVERITY_ALIASES = {
+    "critical": "CRITICAL", "crit": "CRITICAL", "p1": "CRITICAL", "sev1": "CRITICAL",
+    "severity1": "CRITICAL", "1": "CRITICAL", "5": "CRITICAL", "urgent": "CRITICAL",
+    "emergency": "CRITICAL", "veryhigh": "CRITICAL",
+    "high": "HIGH", "p2": "HIGH", "sev2": "HIGH", "severity2": "HIGH", "2": "HIGH",
+    "4": "HIGH", "major": "HIGH",
+    "medium": "MEDIUM", "med": "MEDIUM", "moderate": "MEDIUM", "p3": "MEDIUM",
+    "sev3": "MEDIUM", "severity3": "MEDIUM", "3": "MEDIUM", "normal": "MEDIUM",
+    "low": "LOW", "p4": "LOW", "p5": "LOW", "sev4": "LOW", "sev5": "LOW", "4low": "LOW",
+    "minor": "LOW", "informational": "LOW", "info": "LOW",
+}
+
+DISPOSITION_ALIASES = {
+    "truepositive": "TRUE_POSITIVE", "tp": "TRUE_POSITIVE", "true": "TRUE_POSITIVE",
+    "confirmed": "TRUE_POSITIVE", "malicious": "TRUE_POSITIVE", "incident": "TRUE_POSITIVE",
+    "escalated": "TRUE_POSITIVE", "actioned": "TRUE_POSITIVE",
+    "falsepositive": "FALSE_POSITIVE", "fp": "FALSE_POSITIVE", "false": "FALSE_POSITIVE",
+    "notmalicious": "FALSE_POSITIVE", "noise": "FALSE_POSITIVE",
+    "falsealarm": "FALSE_POSITIVE",
+    "benign": "BENIGN", "expected": "BENIGN", "authorised": "BENIGN",
+    "authorized": "BENIGN", "noaction": "BENIGN", "noactionrequired": "BENIGN",
+    "closed": "BENIGN", "resolved": "BENIGN", "duplicate": "BENIGN",
+}
+
+
+def resolve_columns(header: list[str]) -> tuple[dict[str, str], list[str], list[str]]:
+    """Map a file's headers onto the canonical schema.
+
+    Returns (header -> canonical, notes describing every substitution, ignored headers).
+    Raises IngestError when two headers claim the same field, because picking one would
+    be a guess and this parser does not guess.
+    """
+    mapping: dict[str, str] = {}
+    claims: dict[str, list[str]] = {}
+    notes: list[str] = []
+    ignored: list[str] = []
+
+    for raw in header:
+        if raw is None:
+            continue
+        canonical = _ALIAS_LOOKUP.get(_key(raw))
+        if canonical is None:
+            ignored.append(raw)
+            continue
+        mapping[raw] = canonical
+        claims.setdefault(canonical, []).append(raw)
+
+    clashes = {c: cols for c, cols in claims.items() if len(cols) > 1}
+    if clashes:
+        raise IngestError([
+            f"Two columns both look like '{canonical}': {', '.join(repr(c) for c in cols)}. "
+            f"Rename or remove one -- guessing which you meant would be a guess about "
+            f"your data."
+            for canonical, cols in sorted(clashes.items())
+        ])
+
+    for raw, canonical in mapping.items():
+        if _key(raw) != _key(canonical):
+            notes.append(f"column '{raw}' read as '{canonical}'")
+
+    return mapping, notes, ignored
+
+
+def normalise_severity(raw: str) -> str | None:
+    """Map a vendor severity onto the four the rules understand, or None if unknown."""
+    return SEVERITY_ALIASES.get(_key(raw))
+
+
+def normalise_disposition(raw: str) -> str | None:
+    """Map a vendor resolution code onto the three EG-004 tests, or None if unknown."""
+    return DISPOSITION_ALIASES.get(_key(raw))
+
+
 class IngestError(ValueError):
     """A rejected upload. `errors` is the full, line-numbered list for the UI."""
 
     def __init__(self, errors: list[str]) -> None:
         self.errors = errors
         super().__init__("; ".join(errors[:3]))
-
-
-def _clean(row: dict, key: str) -> str:
-    """One field, trimmed, with a missing column reading as empty rather than None."""
-    return (row.get(key) or "").strip()
 
 
 def _parse_timestamp(raw: str) -> datetime:
@@ -121,19 +256,22 @@ def _parse_timestamp(raw: str) -> datetime:
     return parsed.replace(tzinfo=None)
 
 
-def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
+def parse_csv(text: str, notes: list[str] | None = None) -> tuple[list[tuple], list[tuple]]:
     """Validate a CSV export and return (entity rows, record rows).
 
     Materialises every record. Fine for a review sample; for a large submission use
     `stage_csv`, which validates identically but never holds more than one row.
+
+    `notes`, if given, collects the column substitutions the parser made.
     """
     entities: dict[str, tuple[str, str, str]] = {}
-    records = list(iter_validated_rows(text, entities))
+    records = list(iter_validated_rows(text, entities, notes))
     _check_dataset(entities, len(records))
     return list(entities.values()), records
 
 
-def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
+def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]],
+                        notes: list[str] | None = None):
     """Validate row by row, yielding each record tuple as it passes.
 
     `source` is either the whole file as a string, or any iterable of lines -- an open
@@ -143,7 +281,11 @@ def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
     validated.
 
     `entities` is filled in as a side effect -- it is bounded by the number of CSEs, not
-    by the dataset, so accumulating it costs nothing at any scale.
+    by the dataset, so accumulating it costs nothing at any scale. `notes`, if given, is
+    filled the same way with every column substitution and every ignored column, so the
+    caller can put on screen exactly how the file was read. Both are out-parameters
+    rather than return values because this is a generator: a `return` here is only
+    reachable after the last row, and the header mapping is known before the first.
 
     Errors are collected across the whole file and raised together at the end, so a
     caller streaming rows to disk must treat the generator as all-or-nothing: if it
@@ -159,18 +301,39 @@ def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
 
     reader = csv.DictReader(source)
     header = reader.fieldnames or []
-    normalised = [(h or "").strip().lower() for h in header]
 
     if not header:
         raise IngestError(["The file is empty."])
 
-    missing = [c for c in REQUIRED_COLUMNS if c not in normalised]
+    # Map the export's own column names onto the canonical schema before anything is
+    # read. Every substitution is recorded, never applied quietly -- see the schema
+    # normalisation block above for why that distinction is the whole point.
+    mapping, mapping_notes, ignored = resolve_columns(header)
+    column = {canonical: raw for raw, canonical in mapping.items()}
+
+    missing = [c for c in REQUIRED_COLUMNS if c not in column]
     if missing:
         raise IngestError(
             [f"Missing required column{'s' if len(missing) > 1 else ''}: "
              + ", ".join(missing)]
             + [f"Columns found: {', '.join(header) if header else '(none)'}"]
+            + [f"Spellings accepted for '{c}': {', '.join(COLUMN_ALIASES[c][:8])}"
+               for c in missing]
         )
+
+    if notes is not None:
+        notes.extend(mapping_notes)
+        if ignored:
+            notes.append(
+                "ignored unrecognised column"
+                + ("s: " if len(ignored) > 1 else ": ")
+                + ", ".join(repr(c) for c in ignored)
+            )
+
+    def field(row: dict, canonical: str) -> str:
+        """One canonical field off a row, trimmed, blank when the file omits it."""
+        raw = column.get(canonical)
+        return "" if raw is None else (row.get(raw) or "").strip()
 
     def add(line: int, message: str) -> None:
         if len(errors) < MAX_REPORTED_ERRORS:
@@ -192,8 +355,8 @@ def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
         # Read fields straight off the reader's row rather than building a second dict
         # per row. At a million rows the duplicate dict is pure allocator churn, and
         # churn is what sets the peak even when steady-state memory is flat.
-        record_id = _clean(row, "record_id")
-        entity_id = _clean(row, "entity_id")
+        record_id = field(row, "record_id")
+        entity_id = field(row, "entity_id")
         if not record_id:
             add(line, "record_id is blank.")
             continue
@@ -206,31 +369,35 @@ def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
             add(line, "entity_id is blank.")
             continue
 
-        severity = _clean(row, "severity").upper()
-        if severity not in SEVERITIES:
-            add(line, f"severity '{_clean(row, 'severity')}' is not one of "
-                      f"{', '.join(sorted(SEVERITIES))}.")
+        severity_raw = field(row, "severity")
+        severity = normalise_severity(severity_raw)
+        if severity is None:
+            add(line, f"severity '{severity_raw}' is not a severity this tool "
+                      f"recognises. Expected {', '.join(sorted(SEVERITIES))}, or a "
+                      f"scale it maps -- P1-P5, Sev1-Sev5, 1-5, Major/Minor.")
             continue
 
-        disposition = _clean(row, "disposition").upper()
-        if disposition not in DISPOSITIONS:
-            add(line, f"disposition '{_clean(row, 'disposition')}' is not one of "
-                      f"{', '.join(sorted(DISPOSITIONS))}.")
+        disposition_raw = field(row, "disposition")
+        disposition = normalise_disposition(disposition_raw)
+        if disposition is None:
+            add(line, f"disposition '{disposition_raw}' is not an outcome this tool "
+                      f"recognises. Expected {', '.join(sorted(DISPOSITIONS))}, or a "
+                      f"code it maps -- TP, FP, Benign, No Action Required.")
             continue
 
-        category = _clean(row, "category")
+        category = field(row, "category")
         if not category:
             add(line, "category is blank.")
             continue
 
         try:
-            opened_at = _parse_timestamp(_clean(row, "opened_at"))
+            opened_at = _parse_timestamp(field(row, "opened_at"))
         except ValueError:
-            add(line, f"opened_at '{_clean(row, 'opened_at')}' is not a readable "
+            add(line, f"opened_at '{field(row, 'opened_at')}' is not a readable "
                       f"date/time (expected e.g. 2026-01-05T08:00:00).")
             continue
 
-        closed_raw = _clean(row, "closed_at")
+        closed_raw = field(row, "closed_at")
         closed_at = None
         if closed_raw:
             try:
@@ -242,7 +409,7 @@ def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
                 add(line, "closed_at is before opened_at.")
                 continue
 
-        escalated_raw = _clean(row, "escalated").lower()
+        escalated_raw = field(row, "escalated").lower()
         if escalated_raw in TRUE_VALUES:
             escalated = True
         elif escalated_raw in FALSE_VALUES:
@@ -250,10 +417,10 @@ def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
             # absence of an escalation record means to EG-001 and EG-002.
             escalated = False
         else:
-            add(line, f"escalated '{_clean(row, 'escalated')}' is not a yes/no value.")
+            add(line, f"escalated '{field(row, 'escalated')}' is not a yes/no value.")
             continue
 
-        closure_raw = _clean(row, "closure_time_minutes")
+        closure_raw = field(row, "closure_time_minutes")
         if closure_raw:
             try:
                 closure_minutes = float(closure_raw)
@@ -270,22 +437,22 @@ def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
         else:
             closure_minutes = None
 
-        entity_name = _clean(row, "entity_name") or entity_id
-        sector = _clean(row, "sector") or "Unspecified"
+        entity_name = field(row, "entity_name") or entity_id
+        sector = field(row, "sector") or "Unspecified"
         if entity_id not in entities:
             entities[entity_id] = (entity_id, entity_name, sector)
 
         yield (
             record_id,
             entity_id,
-            _clean(row, "asset_id") or "UNKNOWN",
+            field(row, "asset_id") or "UNKNOWN",
             severity,
             category,
             opened_at,
             closed_at,
             escalated,
             disposition,
-            _clean(row, "investigation_notes") or None,
+            field(row, "investigation_notes") or None,
             closure_minutes,
         )
 
@@ -309,7 +476,8 @@ def _check_dataset(entities: dict, record_count: int) -> None:
         ])
 
 
-def stage_csv(source, staged_path: str) -> tuple[list[tuple], int]:
+def stage_csv(source, staged_path: str,
+              notes: list[str] | None = None) -> tuple[list[tuple], int]:
     """Validate a CSV and write the accepted rows straight to `staged_path`.
 
     The streaming counterpart to `parse_csv`. Rows are written as they are validated
@@ -325,14 +493,14 @@ def stage_csv(source, staged_path: str) -> tuple[list[tuple], int]:
     with open(staged_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(RECORD_COLUMNS)
-        for row in iter_validated_rows(source, entities):
+        for row in iter_validated_rows(source, entities, notes):
             writer.writerow(row)
             written += 1
     _check_dataset(entities, written)
     return list(entities.values()), written
 
 
-def parse_json(text: str) -> tuple[list[tuple], list[tuple]]:
+def parse_json(text: str, notes: list[str] | None = None) -> tuple[list[tuple], list[tuple]]:
     """Validate a JSON alert export and return (entity rows, record rows).
 
     Accepts either a top-level array of record objects, or an object wrapping one under
@@ -378,17 +546,19 @@ def parse_json(text: str) -> tuple[list[tuple], list[tuple]]:
                                      "false" if v is False else str(v))
             for k, v in row.items()
         })
-    return parse_csv(buffer.getvalue())
+    return parse_csv(buffer.getvalue(), notes)
 
 
-def parse(text: str, filename: str = "") -> tuple[list[tuple], list[tuple]]:
+def parse(text: str, filename: str = "",
+          notes: list[str] | None = None) -> tuple[list[tuple], list[tuple]]:
     """Validate an upload, choosing the parser by extension then by content."""
     if filename.lower().endswith(".json"):
-        return parse_json(text)
+        return parse_json(text, notes)
     if filename.lower().endswith(".csv"):
-        return parse_csv(text)
+        return parse_csv(text, notes)
     # No usable extension: JSON announces itself in its first character.
-    return parse_json(text) if text.lstrip()[:1] in "[{" else parse_csv(text)
+    return (parse_json(text, notes) if text.lstrip()[:1] in "[{"
+            else parse_csv(text, notes))
 
 
 RECORD_COLUMNS = (
@@ -490,7 +660,8 @@ def load(con, entities: list[tuple], records: list[tuple], label: str) -> tuple[
     return len(entities), len(records)
 
 
-def load_streaming(con, source, label: str) -> tuple[int, int]:
+def load_streaming(con, source, label: str,
+                   notes: list[str] | None = None) -> tuple[int, int]:
     """Validate and load a CSV without ever holding the dataset in memory.
 
     The streaming path: rows are validated one at a time, written straight to a staged
@@ -506,7 +677,7 @@ def load_streaming(con, source, label: str) -> tuple[int, int]:
     handle, staged = tempfile.mkstemp(suffix=".csv", prefix="satsa-upload-")
     os.close(handle)
     try:
-        entities, count = stage_csv(source, staged)   # raises before the DB is touched
+        entities, count = stage_csv(source, staged, notes)  # raises before the DB is touched
 
         db.wipe(con)
         con.executemany(

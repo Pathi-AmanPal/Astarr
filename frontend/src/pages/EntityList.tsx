@@ -50,6 +50,9 @@ export default function EntityList() {
   // A rejected upload reports every problem at once; the banner lists them rather
   // than making the user re-upload to discover the next one.
   const [uploadError, setUploadError] = useState<{ message: string; details: string[] } | null>(null);
+  // An accepted upload whose columns had to be translated. Shown, not swallowed: the
+  // operator is the only one who can tell us we read 'status' as the wrong field.
+  const [mappingNotes, setMappingNotes] = useState<string[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const busy = resetting || uploading;
@@ -80,8 +83,10 @@ export default function EntityList() {
     setUploading(true);
     setUploadError(null);
     setResetError(null);
+    setMappingNotes([]);
     try {
-      await uploadDataset(file);
+      const result = await uploadDataset(file);
+      setMappingNotes(result.mapping_notes ?? []);
       await load();
     } catch (e) {
       const err = e instanceof ApiError ? e : null;
@@ -191,6 +196,25 @@ export default function EntityList() {
         </div>
       )}
 
+      {mappingNotes.length > 0 && (
+        <div className="banner banner--stack banner--info" role="status">
+          <div className="banner__head">
+            <span>
+              Loaded. This file did not use the standard column names, so it was read
+              as follows — check it before trusting the schedule.
+            </span>
+            <button type="button" className="btn" onClick={() => setMappingNotes([])}>
+              Dismiss
+            </button>
+          </div>
+          <ul className="banner__list">
+            {mappingNotes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {uploadError && (
         <div className="banner banner--stack" role="alert">
           <div className="banner__head">
@@ -211,9 +235,12 @@ export default function EntityList() {
             </ul>
           )}
           <p className="banner__note">
-            Expected columns: record_id, entity_id, entity_name, sector, asset_id,
+            Required fields: record_id, entity_id, entity_name, sector, asset_id,
             severity, category, opened_at, disposition — plus optional closed_at,
-            escalated, investigation_notes, closure_time_minutes.{" "}
+            escalated, investigation_notes, closure_time_minutes. Your export need not
+            use these exact names: common spellings (alert_id, org_id, priority,
+            created_at, resolution, TTR…) are recognised and the translation is shown
+            to you after loading.{" "}
             <a className="btn--link" href={TEMPLATE_URL}>
               Download a template
             </a>

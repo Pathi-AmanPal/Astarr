@@ -307,13 +307,17 @@ async def dataset_upload(file: UploadFile = File(...)):
         )
 
     label = os.path.basename(file.filename or "uploaded.csv")
+    # How the file's own column names were read onto the schema. Returned to the client
+    # and shown, always: a mapping the operator cannot see is a mapping they cannot
+    # correct, and a wrongly-read column produces findings that are confidently wrong.
+    mapping_notes: list[str] = []
     is_json = (file.filename or "").lower().endswith(".json") or text.lstrip()[:1] in "[{"
     try:
         if is_json:
             # JSON is normalised through the CSV validator, which means it is
             # materialised. Acceptable: a JSON submission is an interchange format for
             # a review sample, not the million-row bulk path.
-            entities, records = ingest.parse_json(text)
+            entities, records = ingest.parse_json(text, mapping_notes)
         else:
             entities, records = None, None
     except ingest.IngestError as exc:
@@ -340,7 +344,7 @@ async def dataset_upload(file: UploadFile = File(...)):
                 try:
                     with open(spooled, "r", encoding="utf-8-sig", newline="") as fh:
                         entities_loaded, records_loaded = ingest.load_streaming(
-                            con, fh, label)
+                            con, fh, label, mapping_notes)
                 finally:
                     os.unlink(spooled)
             else:
@@ -363,6 +367,7 @@ async def dataset_upload(file: UploadFile = File(...)):
         "entities_loaded": entities_loaded,
         "records_loaded": records_loaded,
         "findings_generated": findings_generated,
+        "mapping_notes": mapping_notes,
     }
 
 

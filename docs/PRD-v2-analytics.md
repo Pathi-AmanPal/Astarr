@@ -28,7 +28,7 @@ rewritten and must not be.**
 | `backend/config.py` | Validating loader for the above | Keep |
 | `backend/ml.py` | Isolation Forest + SHAP corroboration | Keep; extend read-only |
 | `backend/ingest.py` | CSV/JSON validating parser | Keep; extend |
-| `backend/verify.py` | The regression suite. Currently 110 checks | **Extend. Never weaken.** |
+| `backend/verify.py` | The regression suite. Currently 143 checks | **Extend. Never weaken.** |
 | `backend/db.py` | DuckDB schema and connection | Extend with new tables |
 
 ### 1.2 Replace
@@ -172,6 +172,37 @@ and never regenerate it casually; regenerating changes every expected count in t
 
 Keep every existing assertion that is still meaningful. The counts will change; the
 *structure* of the suite must not weaken.
+
+### 4.3a Schema normalisation — mapping is allowed, guessing is not
+
+*Added 2026-09-06, implemented in `ingest.py`.*
+
+No two CSEs name their columns the same way. An `alert_id` / `Org_ID` / `Priority` /
+`Created At` / `Resolution` export is the normal case, not the exception, and a parser
+that only accepts this repo's spellings makes every submission a hand-transformation
+job first. The parser therefore **maps** onto the canonical schema. It does not guess,
+and it never maps silently.
+
+Three properties are binding and asserted in `verify.py`:
+
+1. **Exact alias matching only.** A header matches after case, spaces, hyphens,
+   underscores and punctuation are stripped — `Escalated?` matches `escalated`. There is
+   no fuzzy matching and no edit distance: `sev` maps because it is in `COLUMN_ALIASES`,
+   not because it resembles `severity`. Adding a spelling means adding a table entry.
+2. **Ambiguity stops the upload.** Two headers claiming one canonical field (`severity`
+   *and* `priority`) is refused, naming both. Either could be right and the tool has no
+   basis to choose.
+3. **Every substitution is reported.** `POST /api/dataset/upload` returns
+   `mapping_notes: string[]` — one entry per translated column plus one listing the
+   columns it ignored — and the UI shows them after a successful load. An empty list for
+   a canonical file, so the notice means something when it appears.
+
+Value scales are normalised the same way: `P1` / `Sev 1` / `1` / `Urgent` → `CRITICAL`,
+`TP` / `Confirmed` → `TRUE_POSITIVE`, `No Action Required` → `BENIGN`. An unrecognised
+value is still a rejected row with a line number, never a defaulted one.
+
+This does not weaken §4.4's rule below. Renaming a column the operator supplied is not
+repairing data; inventing a value they did not supply is, and that is still refused.
 
 ### 4.4 Data lifecycle endpoints
 
@@ -715,7 +746,7 @@ fetches individual findings at all.
 
 ## 13. Verification
 
-`verify.py` is the gate. It currently reports **110 checks, 0 failures** and must never
+`verify.py` is the gate. It currently reports **143 checks, 0 failures** and must never
 be weakened to accommodate a change. Extend it:
 
 **Existing, keep (adapted to the sample fixture):** every rule fires exactly where
