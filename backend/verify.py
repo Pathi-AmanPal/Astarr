@@ -549,6 +549,103 @@ def main() -> int:
     check("restored demo findings match the reference build",
           con3.execute(snapshot).fetchall() == con.execute(snapshot).fetchall())
 
+    print("\nThe SQL engine and the Python rules agree exactly")
+    # detection.run_detection is set-based; run_detection_python is the same rules with
+    # every record in memory. The Python one is the specification, and these assert the
+    # SQL one has not drifted from it -- not "equivalent", identical: same finding ids,
+    # same order, same explanation strings, same evidence lists.
+    import detection as _det
+
+    snap = ("SELECT finding_id, entity_id, rule_id, finding_type, weight, title, "
+            "explanation, evidence_record_ids FROM findings ORDER BY finding_id")
+
+    con_py = db.connect(os.path.join(tempfile.mkdtemp(), "engine_py.duckdb"))
+    seed(con_py)
+    n_py = _det.run_detection_python(con_py)
+    con_sql = db.connect(os.path.join(tempfile.mkdtemp(), "engine_sql.duckdb"))
+    seed(con_sql)
+    n_sql = _det.run_detection(con_sql)
+
+    check("both engines generate the same number of findings", n_py == n_sql,
+          f"python {n_py}, sql {n_sql}")
+    rows_py = con_py.execute(snap).fetchall()
+    rows_sql = con_sql.execute(snap).fetchall()
+    check("every finding is byte-identical between the two engines", rows_py == rows_sql,
+          f"{sum(1 for a, b in zip(rows_py, rows_sql) if a != b)} rows differ")
+    check("both engines rank entities identically",
+          ranked_entities(con_py) == ranked_entities(con_sql))
+
+    # The finding-id sequence crosses 9,999, where DuckDB's lpad truncates a longer
+    # string and Python's :04d does not. That collided on the primary key at 10,000
+    # findings and was invisible on any small dataset.
+    wide = ["record_id,entity_id,entity_name,sector,asset_id,severity,category,"
+            "opened_at,closed_at,escalated,disposition,investigation_notes"]
+    from datetime import datetime as _dt, timedelta as _td
+    base = _dt(2026, 5, 1, 8, 0, 0)
+    for i in range(12000):
+        eid = f"E-{i % 3}"
+        op = base + _td(minutes=i)
+        # every row is a CRITICAL with no escalation, so EG-002 fires on all of them
+        wide.append(f"W-{i:06d},{eid},Ent {i % 3},Sector,A-1,CRITICAL,Malware,"
+                    f"{op.isoformat()},{(op + _td(minutes=30)).isoformat()},false,"
+                    f"TRUE_POSITIVE,note {i}")
+    con_wide = db.connect(os.path.join(tempfile.mkdtemp(), "wide.duckdb"))
+    ew, rw = ingest.parse_csv("\n".join(wide) + "\n")
+    ingest.load(con_wide, ew, rw, "wide.csv")
+    n_wide = _det.run_detection(con_wide)
+    check("finding ids stay unique past 9,999 (lpad truncation)",
+          con_wide.execute("SELECT COUNT(DISTINCT finding_id) FROM findings").fetchone()[0]
+          == n_wide, f"{n_wide} findings")
+    # Compared as a set, not in query order: finding_id sorts lexicographically, so
+    # F-10000 precedes F-1001 and an ordered comparison would fail on a correct sequence.
+    all_ids = {r[0] for r in con_wide.execute("SELECT finding_id FROM findings").fetchall()}
+    check("...and the sequence is exactly F-0001..F-N with no gaps or repeats",
+          all_ids == {f"F-{i:04d}" for i in range(1, n_wide + 1)},
+          f"{len(all_ids)} distinct of {n_wide}")
+
+    print("\nStreaming ingestion matches materialised ingestion")
+    # stage_csv validates one row at a time and writes straight to disk; parse_csv holds
+    # the dataset. They must accept and reject exactly the same files.
+    staged_path = os.path.join(tempfile.mkdtemp(), "staged.csv")
+    ents_stream, n_stream = ingest.stage_csv(ingest.TEMPLATE_CSV, staged_path)
+    ents_mat, recs_mat = ingest.parse_csv(ingest.TEMPLATE_CSV)
+    check("streaming finds the same entities", ents_stream == ents_mat)
+    check("streaming finds the same record count", n_stream == len(recs_mat))
+
+    con_stream = db.connect(os.path.join(tempfile.mkdtemp(), "stream.duckdb"))
+    ingest.load_streaming(con_stream, ingest.TEMPLATE_CSV, "template.csv")
+    con_mat = db.connect(os.path.join(tempfile.mkdtemp(), "mat.duckdb"))
+    ingest.load(con_mat, ents_mat, recs_mat, "template.csv")
+    cols = ", ".join(ingest.RECORD_COLUMNS)
+    check("the loaded rows are identical either way",
+          con_stream.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall()
+          == con_mat.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall())
+
+    # A handle, not a string: the path that keeps peak memory flat.
+    handle_path = os.path.join(tempfile.mkdtemp(), "from_handle.csv")
+    with open(handle_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(ingest.TEMPLATE_CSV)
+    con_handle = db.connect(os.path.join(tempfile.mkdtemp(), "handle.duckdb"))
+    with open(handle_path, "r", encoding="utf-8-sig", newline="") as fh:
+        ingest.load_streaming(con_handle, fh, "from_handle.csv")
+    check("streaming from a file handle loads identically",
+          con_handle.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall()
+          == con_mat.execute(f"SELECT {cols} FROM records ORDER BY record_id").fetchall())
+
+    # The property that makes streaming safe: a file rejected halfway must leave the
+    # previously loaded dataset untouched, not half-replaced.
+    before_rows = con_mat.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    bad = ingest.TEMPLATE_CSV + ("BAD-1,CSE-01,One,Energy,A-1,NOTASEVERITY,Malware,"
+                                 "2026-01-05T08:00:00,,false,TRUE_POSITIVE,,\n")
+    try:
+        ingest.load_streaming(con_mat, bad, "bad.csv")
+        check("a rejected streaming upload leaves the dataset intact", False,
+              "the bad file was accepted")
+    except ingest.IngestError:
+        check("a rejected streaming upload leaves the dataset intact",
+              con_mat.execute("SELECT COUNT(*) FROM records").fetchone()[0] == before_rows
+              and db.dataset_meta(con_mat) is not None)
+
     print("\nBulk insert preserves types and NULLs")
     # Records reach DuckDB through a staged CSV rather than one INSERT per row (198x
     # faster, measured). CSV has no type system, so the risk this trades for speed is
@@ -570,7 +667,6 @@ def main() -> int:
         "SELECT opened_at, closed_at, escalated, investigation_notes, "
         "closure_time_minutes FROM records WHERE record_id = 'R-1'"
     ).fetchone()
-    from datetime import datetime as _dt
     check("a timestamp survives as TIMESTAMP, not text",
           isinstance(row[0], _dt) and row[0] == _dt(2026, 1, 5, 8, 0), str(row[0]))
     check("a boolean survives as BOOLEAN", row[2] is True, repr(row[2]))

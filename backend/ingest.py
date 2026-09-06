@@ -105,6 +105,11 @@ class IngestError(ValueError):
         super().__init__("; ".join(errors[:3]))
 
 
+def _clean(row: dict, key: str) -> str:
+    """One field, trimmed, with a missing column reading as empty rather than None."""
+    return (row.get(key) or "").strip()
+
+
 def _parse_timestamp(raw: str) -> datetime:
     """Accept ISO 8601 with either a 'T' or a space, and a trailing Z."""
     text = raw.strip().replace(" ", "T", 1)
@@ -119,17 +124,45 @@ def _parse_timestamp(raw: str) -> datetime:
 def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
     """Validate a CSV export and return (entity rows, record rows).
 
-    Raises IngestError carrying every problem found, each prefixed with its line
-    number as it appears in the user's file.
+    Materialises every record. Fine for a review sample; for a large submission use
+    `stage_csv`, which validates identically but never holds more than one row.
+    """
+    entities: dict[str, tuple[str, str, str]] = {}
+    records = list(iter_validated_rows(text, entities))
+    _check_dataset(entities, len(records))
+    return list(entities.values()), records
+
+
+def iter_validated_rows(source, entities: dict[str, tuple[str, str, str]]):
+    """Validate row by row, yielding each record tuple as it passes.
+
+    `source` is either the whole file as a string, or any iterable of lines -- an open
+    file handle being the one that matters. Passing a handle is what keeps peak memory
+    flat: a 150 MiB export read as a string costs 150 MiB for the string and another
+    150 MiB for the StringIO the csv module reads it through, before a single row is
+    validated.
+
+    `entities` is filled in as a side effect -- it is bounded by the number of CSEs, not
+    by the dataset, so accumulating it costs nothing at any scale.
+
+    Errors are collected across the whole file and raised together at the end, so a
+    caller streaming rows to disk must treat the generator as all-or-nothing: if it
+    raises, discard whatever was written. That is what keeps a rejected upload from
+    leaving a half-loaded dataset behind.
     """
     errors: list[str] = []
 
-    if not text.strip():
-        raise IngestError(["The file is empty."])
+    if isinstance(source, str):
+        if not source.strip():
+            raise IngestError(["The file is empty."])
+        source = io.StringIO(source)
 
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(source)
     header = reader.fieldnames or []
     normalised = [(h or "").strip().lower() for h in header]
+
+    if not header:
+        raise IngestError(["The file is empty."])
 
     missing = [c for c in REQUIRED_COLUMNS if c not in normalised]
     if missing:
@@ -143,8 +176,6 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
         if len(errors) < MAX_REPORTED_ERRORS:
             errors.append(f"Line {line}: {message}")
 
-    records: list[tuple] = []
-    entities: dict[str, tuple[str, str, str]] = {}
     seen_ids: set[str] = set()
     row_count = 0
 
@@ -158,10 +189,11 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
                 [f"File exceeds {MAX_ROWS:,} rows. Split the export and upload in parts."]
             )
 
-        value = {k: (row.get(k) or "").strip() for k in normalised if k}
-
-        record_id = value.get("record_id", "")
-        entity_id = value.get("entity_id", "")
+        # Read fields straight off the reader's row rather than building a second dict
+        # per row. At a million rows the duplicate dict is pure allocator churn, and
+        # churn is what sets the peak even when steady-state memory is flat.
+        record_id = _clean(row, "record_id")
+        entity_id = _clean(row, "entity_id")
         if not record_id:
             add(line, "record_id is blank.")
             continue
@@ -174,31 +206,31 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
             add(line, "entity_id is blank.")
             continue
 
-        severity = value.get("severity", "").upper()
+        severity = _clean(row, "severity").upper()
         if severity not in SEVERITIES:
-            add(line, f"severity '{value.get('severity', '')}' is not one of "
+            add(line, f"severity '{_clean(row, 'severity')}' is not one of "
                       f"{', '.join(sorted(SEVERITIES))}.")
             continue
 
-        disposition = value.get("disposition", "").upper()
+        disposition = _clean(row, "disposition").upper()
         if disposition not in DISPOSITIONS:
-            add(line, f"disposition '{value.get('disposition', '')}' is not one of "
+            add(line, f"disposition '{_clean(row, 'disposition')}' is not one of "
                       f"{', '.join(sorted(DISPOSITIONS))}.")
             continue
 
-        category = value.get("category", "")
+        category = _clean(row, "category")
         if not category:
             add(line, "category is blank.")
             continue
 
         try:
-            opened_at = _parse_timestamp(value.get("opened_at", ""))
+            opened_at = _parse_timestamp(_clean(row, "opened_at"))
         except ValueError:
-            add(line, f"opened_at '{value.get('opened_at', '')}' is not a readable "
+            add(line, f"opened_at '{_clean(row, 'opened_at')}' is not a readable "
                       f"date/time (expected e.g. 2026-01-05T08:00:00).")
             continue
 
-        closed_raw = value.get("closed_at", "")
+        closed_raw = _clean(row, "closed_at")
         closed_at = None
         if closed_raw:
             try:
@@ -210,7 +242,7 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
                 add(line, "closed_at is before opened_at.")
                 continue
 
-        escalated_raw = value.get("escalated", "").lower()
+        escalated_raw = _clean(row, "escalated").lower()
         if escalated_raw in TRUE_VALUES:
             escalated = True
         elif escalated_raw in FALSE_VALUES:
@@ -218,10 +250,10 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
             # absence of an escalation record means to EG-001 and EG-002.
             escalated = False
         else:
-            add(line, f"escalated '{value.get('escalated', '')}' is not a yes/no value.")
+            add(line, f"escalated '{_clean(row, 'escalated')}' is not a yes/no value.")
             continue
 
-        closure_raw = value.get("closure_time_minutes", "")
+        closure_raw = _clean(row, "closure_time_minutes")
         if closure_raw:
             try:
                 closure_minutes = float(closure_raw)
@@ -238,31 +270,34 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
         else:
             closure_minutes = None
 
-        entity_name = value.get("entity_name", "") or entity_id
-        sector = value.get("sector", "") or "Unspecified"
+        entity_name = _clean(row, "entity_name") or entity_id
+        sector = _clean(row, "sector") or "Unspecified"
         if entity_id not in entities:
             entities[entity_id] = (entity_id, entity_name, sector)
 
-        records.append((
+        yield (
             record_id,
             entity_id,
-            value.get("asset_id", "") or "UNKNOWN",
+            _clean(row, "asset_id") or "UNKNOWN",
             severity,
             category,
             opened_at,
             closed_at,
             escalated,
             disposition,
-            value.get("investigation_notes", "") or None,
+            _clean(row, "investigation_notes") or None,
             closure_minutes,
-        ))
+        )
 
     if errors:
         if len(seen_ids) + len(errors) >= MAX_REPORTED_ERRORS:
             errors.append("... further problems not listed; fix these first.")
         raise IngestError(errors)
 
-    if not records:
+
+def _check_dataset(entities: dict, record_count: int) -> None:
+    """Whole-file checks, applied after every row has been validated."""
+    if not record_count:
         raise IngestError(["The file has a valid header but no data rows."])
 
     # NS-001 compares an entity against a population, and NS-002 needs peers reporting
@@ -273,7 +308,28 @@ def parse_csv(text: str) -> tuple[list[tuple], list[tuple]]:
             f"entity against its peers, so at least 2 entities are required."
         ])
 
-    return list(entities.values()), records
+
+def stage_csv(source, staged_path: str) -> tuple[list[tuple], int]:
+    """Validate a CSV and write the accepted rows straight to `staged_path`.
+
+    The streaming counterpart to `parse_csv`. Rows are written as they are validated
+    and never accumulate, so peak memory is one row plus the entity table rather than
+    ~1.5 KiB per record -- the difference between 1.5 GiB and a flat profile on a
+    million-row submission.
+
+    Nothing touches the database here. If validation raises, the caller deletes the
+    staged file and the previously loaded dataset is untouched.
+    """
+    entities: dict[str, tuple[str, str, str]] = {}
+    written = 0
+    with open(staged_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(RECORD_COLUMNS)
+        for row in iter_validated_rows(source, entities):
+            writer.writerow(row)
+            written += 1
+    _check_dataset(entities, written)
+    return list(entities.values()), written
 
 
 def parse_json(text: str) -> tuple[list[tuple], list[tuple]]:
@@ -393,6 +449,20 @@ def _bulk_insert(con, table: str, column_types: dict[str, str],
         os.unlink(staged)
 
 
+ML_PROFILE_COLUMN_TYPES = {
+    "entity_id": "VARCHAR", "feature": "VARCHAR", "label": "VARCHAR",
+    "value": "DOUBLE", "dataset_mean": "DOUBLE", "deviation": "DOUBLE",
+    "contribution": "DOUBLE", "method": "VARCHAR", "anomalous": "BOOLEAN",
+    "corroborated": "BOOLEAN",
+}
+
+
+def bulk_insert_ml_profile(con, rows: list[tuple]) -> None:
+    """Insert the ML profile. Four rows per entity, so this is the slow path at 2,000
+    CSEs -- 8,000 prepared statements measured about ten seconds."""
+    _bulk_insert(con, "ml_profile", ML_PROFILE_COLUMN_TYPES, rows)
+
+
 def bulk_insert_findings(con, rows: list[tuple]) -> None:
     """Insert generated findings. Same mechanism, same reasoning as the records path."""
     _bulk_insert(con, "findings", FINDING_COLUMN_TYPES, rows)
@@ -418,6 +488,42 @@ def load(con, entities: list[tuple], records: list[tuple], label: str) -> tuple[
     db.set_dataset_meta(con, source="upload", label=label,
                         entity_count=len(entities), record_count=len(records))
     return len(entities), len(records)
+
+
+def load_streaming(con, source, label: str) -> tuple[int, int]:
+    """Validate and load a CSV without ever holding the dataset in memory.
+
+    The streaming path: rows are validated one at a time, written straight to a staged
+    CSV, and handed to DuckDB's vectorised reader in a single statement. Peak memory is
+    the entity table plus one row, instead of ~1.5 KiB per record.
+
+    All-or-nothing is preserved by ordering, not by transactions: nothing touches the
+    database until every row has passed. A rejected file deletes the staged copy and
+    leaves the loaded dataset exactly as it was.
+    """
+    import db
+
+    handle, staged = tempfile.mkstemp(suffix=".csv", prefix="satsa-upload-")
+    os.close(handle)
+    try:
+        entities, count = stage_csv(source, staged)   # raises before the DB is touched
+
+        db.wipe(con)
+        con.executemany(
+            "INSERT INTO entities (entity_id, entity_name, sector) VALUES (?, ?, ?)",
+            entities,
+        )
+        columns = ", ".join(RECORD_COLUMNS)
+        con.execute(
+            f"INSERT INTO records ({columns}) "
+            f"SELECT {columns} FROM read_csv(?, header=true, columns=?, nullstr='')",
+            [staged, RECORD_COLUMN_TYPES],
+        )
+        db.set_dataset_meta(con, source="upload", label=label,
+                            entity_count=len(entities), record_count=count)
+        return len(entities), count
+    finally:
+        os.unlink(staged)
 
 
 def _cli() -> int:

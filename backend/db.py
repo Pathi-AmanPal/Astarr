@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import duckdb
 
@@ -107,8 +108,29 @@ def connect(path: str | None = None) -> duckdb.DuckDBPyConnection:
             flush=True,
         )
         con = duckdb.connect(":memory:")
+    _apply_tuning(con)
     con.execute(SCHEMA)
     return con
+
+
+def _apply_tuning(con: duckdb.DuckDBPyConnection) -> None:
+    """Optional resource limits, off by default.
+
+    DuckDB's own default is 80% of system RAM and it adapts to the machine, which is the
+    right behaviour for an operator who has not asked for anything else. A fixed low
+    limit is not free: measured on a million-record load, 256MB holds peak RSS to 404
+    MiB, while 128MB fails outright with an OutOfMemoryError inside EG-003's aggregation.
+
+    So this is a knob, not a policy. An operator deploying onto a constrained VM sets
+    SATSA_DB_MEMORY_LIMIT (e.g. "512MB") and SATSA_DB_THREADS; nobody else needs to know
+    the setting exists.
+    """
+    limit = os.environ.get("SATSA_DB_MEMORY_LIMIT")
+    if limit:
+        con.execute(f"SET memory_limit='{limit}'")
+    threads = os.environ.get("SATSA_DB_THREADS")
+    if threads:
+        con.execute(f"SET threads={int(threads)}")
 
 
 def is_empty(con: duckdb.DuckDBPyConnection) -> bool:
