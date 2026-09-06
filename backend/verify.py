@@ -797,6 +797,33 @@ def main() -> int:
           ents_messy_s == e_canon and n_messy_s == len(r_canon))
     check("...and reports the same substitutions", notes_stream == notes_messy)
 
+    print("\nCORS admits any loopback port, and nothing else")
+    # The browser reports a CORS rejection to fetch() as an indistinct network error,
+    # so a blocked origin makes the UI say "cannot reach backend" about a backend that
+    # is running and answering. Vite takes the next free port when its default is busy,
+    # which used to be enough to trigger exactly that false diagnosis. Asserted through
+    # the real middleware instance, configured exactly as the app configures it.
+    from starlette.middleware.cors import CORSMiddleware
+
+    import main as _api
+
+    _entry = next(m for m in _api.app.user_middleware if m.cls is CORSMiddleware)
+    _cors = CORSMiddleware(app=lambda *a, **k: None, **_entry.kwargs)
+
+    allowed = ["http://localhost:5173", "http://localhost:5174", "http://localhost:8080",
+               "http://127.0.0.1:4173", "http://[::1]:5175", "http://localhost"]
+    refused = ["http://evil.com", "https://evil.com", "http://localhost.evil.com",
+               "http://evil.com:5174", "http://127.0.0.1.evil.com:5173"]
+
+    check("every loopback origin is allowed, whatever the port",
+          all(_cors.is_allowed_origin(o) for o in allowed),
+          ", ".join(o for o in allowed if not _cors.is_allowed_origin(o)))
+    # The anchors are the whole point: an unanchored pattern would admit
+    # localhost.evil.com, which is a domain anyone can register.
+    check("...and no origin that merely contains a loopback name is",
+          not any(_cors.is_allowed_origin(o) for o in refused),
+          ", ".join(o for o in refused if _cors.is_allowed_origin(o)))
+
     print("\nConcurrent reads on the shared connection")
     # The detail screen fetches its findings and its ML profile at the same time, and
     # FastAPI runs sync endpoints on a threadpool -- so two requests hit one DuckDB

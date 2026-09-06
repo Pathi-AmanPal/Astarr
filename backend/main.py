@@ -101,13 +101,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SAT-SA - Supervisory Analytics", lifespan=lifespan)
 
-# The Vite dev server runs on a different port. Localhost only -- no outbound calls.
+# The Vite dev server runs on a different port, so the browser needs this to talk to
+# the API at all.
+#
+# Any loopback port, not a fixed list. Vite takes the next free port when its default
+# is occupied -- 5174, 5175 -- and a pinned allowlist turns that ordinary event into a
+# blocked response. The browser reports a CORS rejection to fetch() as an indistinct
+# network error, so the UI then says "cannot reach backend" about a backend that is
+# running and answering: a false diagnosis that costs real time to unpick. It has
+# already cost some.
+#
+# This is not a widening. The regex admits only 127.0.0.1, ::1 and the literal name
+# `localhost`, so it grants nothing that is not already on the machine, and the server
+# binds to loopback anyway. In the packaged deployment the frontend is served from
+# this same origin and no request goes through here at all.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:4173", "http://127.0.0.1:4173",
-    ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
