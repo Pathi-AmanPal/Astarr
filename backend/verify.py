@@ -16,13 +16,17 @@ import sys
 import tempfile
 from collections import Counter
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import db
 import ingest
+
 from detection import (NS001_MIN_COHORT_SIZE, NS001_STDDEV_MULTIPLIER, ns001,
                        ns002_min_reporting, run_detection)
 from ml import ML_RULE_ID, build_features, ml_corroboration
 from scoring import TIER_CAP, TIER_WEIGHTS, ranked_entities, tier_breakdown
-from seed import BLIND_SPOT_CATEGORY, seed
+
+BLIND_SPOT_CATEGORY = "Phishing"
 
 PASS, FAIL = "PASS", "FAIL"
 _failures: list[str] = []
@@ -52,8 +56,13 @@ def entities_for(con, rule_id: str) -> list[str]:
 
 def main() -> int:
     con = db.connect(os.path.join(tempfile.mkdtemp(), "verify.duckdb"))
-    entities_loaded, records_loaded = seed(con)
+    fixture_path = os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "regression-dataset.csv")
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        csv_text = f.read()
+    entities, records = ingest.parse(csv_text, "regression-dataset.csv")
+    entities_loaded, records_loaded = ingest.load(con, entities, records, "regression-dataset.csv")
     findings_generated = run_detection(con)
+
 
     print("\n1. Dataset shape")
     check("12 entities loaded", entities_loaded == 12, f"got {entities_loaded}")
@@ -538,16 +547,16 @@ def main() -> int:
     check("an upload replaces the previous dataset rather than appending",
           con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3)
 
-    # Loading the demo seed over an upload must restore it completely.
-    seed(con3)
-    db.set_dataset_meta(con3, source="demo_seed", label="Synthetic demo dataset",
-                        entity_count=12, record_count=248)
-    run_detection(con3)
-    check("the demo seed can be restored over an upload",
-          con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 248
-          and db.dataset_meta(con3)["source"] == "demo_seed")
-    check("restored demo findings match the reference build",
-          con3.execute(snapshot).fetchall() == con.execute(snapshot).fetchall())
+    # Clearing the database returns it to empty state.
+    db.wipe(con3)
+    check("db.wipe empties records", con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0)
+    check("db.wipe empties dataset_meta", db.dataset_meta(con3) is None)
+
+    fresh_con = db.connect(os.path.join(tempfile.mkdtemp(), "fresh.duckdb"))
+    check("fresh DB yields 0 entities", fresh_con.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0)
+    check("fresh DB yields 0 records", fresh_con.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0)
+    check("fresh DB yields 0 findings", fresh_con.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0)
+
 
     print("\nConcurrent reads on the shared connection")
     # The detail screen fetches its findings and its ML profile at the same time, and

@@ -26,7 +26,6 @@ import ingest
 import models
 from detection import run_detection
 from scoring import entity_scores, ranked_entities
-from seed import seed
 
 RECORD_COLUMNS = [
     "record_id", "entity_id", "asset_id", "severity", "category", "opened_at",
@@ -37,21 +36,6 @@ RECORD_COLUMNS = [
 # read into memory first. Well above the 50k-row ceiling ingest.py enforces.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-DEMO_LABEL = "Synthetic demo dataset"
-
-# One DuckDB connection is shared by every request, and FastAPI runs sync endpoints on
-# a threadpool -- so two requests arriving together execute on the same connection
-# concurrently and interleave each other's result sets. The observed failure was a
-# `ValueError: dictionary update sequence element #0 has length 1` out of scoring.py
-# and a spurious 404 from the entity lookup, i.e. a corrupted read, not a crash at the
-# point of misuse.
-#
-# It stayed latent while every screen made one call at a time. The detail page now
-# fetches its findings and its ML profile together, which is what surfaced it.
-#
-# Serialising is the right trade here rather than a connection pool: the dataset is a
-# few hundred rows, every query is sub-millisecond, and a supervisory tool has one
-# reader. Correctness over a concurrency win nobody can measure.
 _db_lock = threading.RLock()
 
 
@@ -68,34 +52,13 @@ def serialised(fn):
     return wrapper
 
 
-def _seed_demo(con) -> tuple[int, int]:
-    """Load the built-in demo dataset and recompute. Returns (entities, findings)."""
-    entities_loaded, records_loaded = seed(con)
-    findings_generated = run_detection(con)
-    db.set_dataset_meta(con, source="demo_seed", label=DEMO_LABEL,
-                        entity_count=entities_loaded, record_count=records_loaded)
-    return entities_loaded, findings_generated
-
-
-def _ensure_seeded(con) -> None:
-    if db.is_empty(con):
-        _seed_demo(con)
-    elif db.dataset_meta(con) is None:
-        # A database written before provenance existed. Label it from what is actually
-        # in it rather than guessing, and never re-seed over a user's uploaded data.
-        entity_count = con.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-        record_count = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        db.set_dataset_meta(con, source="demo_seed", label=DEMO_LABEL,
-                            entity_count=entity_count, record_count=record_count)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     con = db.connect()
-    _ensure_seeded(con)
     app.state.con = con
     yield
     con.close()
+
 
 
 app = FastAPI(title="SAT-SA - Supervisory Analytics", lifespan=lifespan)
@@ -262,8 +225,23 @@ def dataset_info():
     """Provenance for the loaded dataset, shown in the masthead."""
     meta = db.dataset_meta(app.state.con)
     if meta is None:
-        raise HTTPException(status_code=404, detail={"error": "No dataset loaded"})
+        return {
+            "source": "empty",
+            "label": "No dataset loaded",
+            "loaded_at": None,
+            "entity_count": 0,
+            "record_count": 0,
+        }
     return meta
+
+
+@app.delete("/api/dataset", response_model=models.ClearResult)
+@serialised
+def dataset_clear():
+    """Wipe all dataset records, findings, and metadata, returning to empty state."""
+    con = app.state.con
+    db.wipe(con)
+    return {"status": "dataset_cleared"}
 
 
 @app.get("/api/dataset/template.csv", include_in_schema=False)
@@ -283,7 +261,7 @@ def dataset_template():
 
 @app.post("/api/dataset/upload", response_model=models.UploadResult)
 async def dataset_upload(file: UploadFile = File(...)):
-    """Replace the demo dataset with an uploaded alert export.
+    """Replace the current dataset with an uploaded alert export.
 
     Rejected uploads leave the previous dataset untouched: parsing and validation both
     complete before anything is written, so a bad file cannot leave the tool holding
@@ -317,22 +295,16 @@ async def dataset_upload(file: UploadFile = File(...)):
 
     con = app.state.con
     label = os.path.basename(file.filename or "uploaded.csv")
-    # The lock is taken around the database work only, never across an await: this
-    # endpoint runs on the event loop, and holding a blocking lock over a suspension
-    # point would stall every other request rather than merely serialise this one.
     try:
         with _db_lock:
             entities_loaded, records_loaded = ingest.load(con, entities, records, label)
             findings_generated = run_detection(con)
     except Exception as exc:
-        # The dataset is now indeterminate; restore the demo rather than serve a
-        # half-written schedule.
         with _db_lock:
-            _seed_demo(con)
+            db.wipe(con)
         raise HTTPException(
             status_code=500,
-            detail={"error": f"Load failed and the demo dataset was restored: {exc}",
-                    "details": []},
+            detail={"error": f"Load failed: {exc}", "details": []},
         )
 
     return {
@@ -343,21 +315,6 @@ async def dataset_upload(file: UploadFile = File(...)):
         "findings_generated": findings_generated,
     }
 
-
-@app.post("/api/demo/reset", response_model=models.ResetResult)
-@serialised
-def demo_reset():
-    """Restore the built-in demo dataset, discarding any upload."""
-    con = app.state.con
-    try:
-        entities_loaded, findings_generated = _seed_demo(con)
-    except Exception as exc:  # surfaced to the UI as a retry-able banner
-        raise HTTPException(status_code=500, detail={"error": f"Reset failed: {exc}"})
-    return {
-        "status": "reset_complete",
-        "entities_loaded": entities_loaded,
-        "findings_generated": findings_generated,
-    }
 
 
 # --- Static frontend (container builds only) -------------------------------------

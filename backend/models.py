@@ -118,11 +118,15 @@ class MlProfile(BaseModel):
 class DatasetInfo(BaseModel):
     """Which dataset the current schedule was computed over."""
 
-    source: str          # 'demo_seed' | 'upload'
+    source: str          # 'upload' | 'empty'
     label: str
-    loaded_at: datetime
+    loaded_at: datetime | None
     entity_count: int
     record_count: int
+
+
+class ClearResult(BaseModel):
+    status: str
 
 
 class ResetResult(BaseModel):
@@ -141,3 +145,4 @@ class UploadResult(BaseModel):
 
 class Health(BaseModel):
     status: str
+
