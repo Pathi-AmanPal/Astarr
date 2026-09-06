@@ -44,7 +44,7 @@ rewritten and must not be.**
 | Path | Why |
 | --- | --- |
 | `backend/seed.py` | v2 has no built-in dataset. See §4. |
-| `custom_test_alerts.csv` | Moves to `samples/` as a *downloadable* file, never auto-loaded |
+| `custom_test_alerts.csv` | Superseded. Fold its planted scenarios into `tests/fixtures/regression-dataset.csv` if useful, then delete |
 
 ### 1.4 The scoring formula, for reference
 
@@ -120,30 +120,34 @@ and no fixture written on first boot.
 
 ### 4.2 What replaces it
 
-**A `samples/` directory, downloadable and never auto-loaded.** Ship two files:
+**The schema template, and nothing else, in the product.**
 
-| File | Contents | Purpose |
+| File | Shipped where | Reachable from the UI? |
 | --- | --- | --- |
-| `samples/sat-sa-template.csv` | 3 rows, all columns, valid | Answers "what shape does it want?" |
-| `samples/sat-sa-example.csv` | ~250 rows across ~12 entities, containing planted instances of every rule | Lets someone evaluate the tool in 30 seconds |
+| `samples/sat-sa-template.csv` | `samples/` | **Yes** — a 3-row column reference, downloaded to answer "what shape does it want?" |
+| `tests/fixtures/regression-dataset.csv` | `tests/fixtures/` | **No.** Test ground truth only |
 
-Both are reachable from the empty state and from a "Sample data" link in the sidebar.
-The user chooses to load one; the tool never does it for them.
-
-> **Why this distinction matters, and do not collapse it.** "No demo records" means the
-> product does not pretend to have data it was not given. It does not mean nobody can
-> ever try the tool. A sample file the user explicitly loads is *their* data as far as
-> the tool is concerned — provenance shows the filename, and the empty state returns
-> when they clear it.
+**There is deliberately no "Load sample dataset" button.** The product owner's demo
+opens on the empty state and the first action on camera is uploading the SOC's own alert
+export. A one-click sample loader on that screen invites exactly the question the empty
+start exists to pre-empt — *"so it does ship with data?"* — and answers it badly. The
+template download is different: it is a column reference, three rows, obviously not a
+dataset.
 
 ### 4.3 Regression suite consequence
 
 `verify.py` currently seeds from `seed.py` and asserts 12 entities / 248 records /
-18 findings. Rewrite it to load `samples/sat-sa-example.csv` through
-`ingest.parse()` instead. **The example file therefore becomes a test fixture and must
-be deterministic — fixed timestamps, no randomness, committed to the repo.** Generate it
-once with a script (`scripts/make-sample.py`, committed) and never regenerate it
-casually; regenerating changes every expected count in the suite.
+18 findings. Rewrite it to load `tests/fixtures/regression-dataset.csv` through
+`ingest.parse()` instead.
+
+**Deleting `seed.py` without this step deletes the regression suite's ground truth.** The
+fixture is not a product feature and must never be reachable from the UI, but it is
+mandatory: it is the only thing that keeps "every rule fires exactly where planted" a
+checkable claim.
+
+The fixture must be **deterministic** — fixed timestamps, no randomness, no wall-clock
+read — and committed. Generate it once with `scripts/make-fixture.py` (also committed)
+and never regenerate it casually; regenerating changes every expected count in the suite.
 
 Keep every existing assertion that is still meaningful. The counts will change; the
 *structure* of the suite must not weaken.
@@ -156,7 +160,6 @@ Keep every existing assertion that is still meaningful. The counts will change; 
 | `DELETE` | `/api/dataset` | Wipe everything and return to the empty state. **New** |
 | `GET` | `/api/dataset` | Provenance: source, label, loaded_at, counts. Exists — keep |
 | `GET` | `/api/dataset/template.csv` | Exists — keep |
-| `GET` | `/api/dataset/sample.csv` | Serve `samples/sat-sa-example.csv`. **New** |
 
 **Validation must keep refusing rather than repairing.** A missing severity must not
 become `MEDIUM`; a missing `entity_id` must not become a real entity's id. This is
@@ -261,7 +264,6 @@ GET  /api/analytics/handling                 # closure percentiles, rates
 GET  /api/entities/{id}/analytics            # the same metrics scoped to one entity
 GET  /api/tree                               # the full case hierarchy, §8.3
 DELETE /api/dataset                          # clear
-GET  /api/dataset/sample.csv
 ```
 
 ### 6.1 Contract rules
@@ -373,13 +375,52 @@ the template and the sample.
 With no data loaded, `/` shows a designed empty state, not a blank dashboard:
 
 - What the tool does, in two sentences.
-- The upload control, as the primary action.
-- "Download the template" and "Load the sample dataset" as secondary actions.
+- The upload control, as the primary action — large, obvious, drag-and-drop as well as
+  click.
+- "Download the template" as the only secondary action.
 - The expected columns, listed.
+
+**This is the opening shot of the demo video (§8.6). It is a designed screen, not a
+placeholder.**
 
 Every other route redirects here while the dataset is empty. **Build this early, not
 last** — with `seed.py` deleted it is the first thing anyone sees, and it will be the
 state the tool is in most often during development.
+
+---
+
+### 8.6 The demo video path — a build requirement
+
+The product is demonstrated by a recorded walkthrough that **starts from an empty tool
+and loads a real SOC alert export on camera.** That sequence is a requirement, not a
+marketing afterthought, because it is what makes "no built-in data" visible rather than
+merely claimed.
+
+The path, in order, must work end to end without a reload, a console error, or a visible
+broken frame:
+
+1. **Empty state.** Designed, composed, obviously intentional (§8.5).
+2. **Upload.** Drag-and-drop or click. The filename is visible as it is accepted.
+3. **Validation.** On a good file, no error. On a bad one, line-numbered problems over
+   an unchanged empty state.
+4. **Population.** The dashboard fills. Charts animate in from their zero baseline —
+   one coordinated 400–600ms entrance, not eight independent ones.
+5. **Provenance.** The uploaded filename is on screen, in the masthead, permanently.
+   This is the shot that proves the data came from the operator.
+6. **Drill down.** Overview → a chart segment → the entity → its findings tree → one
+   finding → its evidence records.
+7. **Clear.** The dataset is removed and the tool returns to the empty state.
+
+Requirements this imposes:
+
+- **No flash of a broken or skeletal layout** between upload and populated dashboard.
+  Hold the previous frame until the data is ready, then transition once.
+- **Upload → rendered dashboard in under 3 seconds** for a file of a few thousand rows.
+- **Every number visible in step 4 must be traceable in step 6.** A headline figure that
+  cannot be drilled into is a figure that will be asked about on camera.
+- Respect `prefers-reduced-motion` — the entrance animation must have a no-motion path.
+
+Build and rehearse this path in Phase 4; do not discover it in Phase 7.
 
 ---
 
@@ -588,7 +629,7 @@ Ship each phase working. Do not start a phase before the previous one's checks p
 | **1** | Delete `seed.py`; build `samples/`, `scripts/make-sample.py`, `DELETE /api/dataset`; rewrite `verify.py` onto the fixture | Suite green on the new fixture; empty DB stays empty |
 | **2** | Metrics layer + `/api/analytics/*`, fully typed, fully tested. **No UI work** | Every §5.1 metric has a passing hand-checked assertion |
 | **3** | Shell: routes, `LineSidebar` with the §11.1 fixes, empty state, Data screen | Can upload, see provenance, clear, and land back on empty |
-| **4** | Overview dashboard and all charts | Every chart renders, drills, and has empty/low-confidence states |
+| **4** | Overview dashboard and all charts | Every chart renders, drills, and has empty/low-confidence states; **the §8.6 video path runs clean end to end** |
 | **5** | Cases tree + `Folder` evidence opener | Tree keyboard-navigable; counts reconcile with the schedule |
 | **6** | Entity detail, ML profile carried over, sparklines | — |
 | **7** | Polish, offline verification with the network physically off, rewrite `DESIGN.md` from what shipped | Three consecutive clean end-to-end runs |
@@ -621,10 +662,16 @@ exist yet produces frontend-computed numbers that then have to be unpicked.
 
 ## 16. Open questions — resolve with the product owner before building
 
-1. **Q1 — Sample dataset content.** Should `samples/sat-sa-example.csv` reuse the
+1. **Q1 — Regression fixture content.** *(Partly settled: there is no user-facing
+   sample dataset — §4.2.)* Should `tests/fixtures/regression-dataset.csv` reuse the
    retired seed's planted scenarios (12 entities, 248 records, 18 findings), or model a
-   different, more realistic SOC? Reusing it preserves every existing assertion and is
-   substantially less work.
+   different SOC? Reusing it preserves every existing assertion and is substantially
+   less work. **Recommended: reuse it.** It is a test fixture nobody sees; novelty buys
+   nothing and costs the whole suite's ground truth.
+   
+   Separately, the product owner must supply the **file used in the demo video** (§8.6).
+   That is a real or realistic SOC export, is *not* committed to the repo, and is not
+   this fixture.
 2. **Q2 — Per-analyst analytics.** Are the four optional columns in §5.2
    (`analyst_id`, `analyst_name`, `acknowledged_at`, `sla_target_minutes`) in scope? If
    yes it is a phase of its own; if no, the dashboard is per-entity only and must be
