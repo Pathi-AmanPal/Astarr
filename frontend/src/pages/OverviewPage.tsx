@@ -1,18 +1,22 @@
 /** The Overview — how is this population of SOCs performing?
  *
- *  Six panels, each answering one question a supervisor would actually ask, and each
+ *  Six panels, each answering a question a supervisor would actually ask, and each
  *  drawn in the form that question deserves rather than the form that fills the space:
  *
- *   1. Where do the scores sit?          -> histogram over fixed bands
- *   2. Is alert volume steady?           -> line over time, day or week
- *   3. How long do alerts stay open?     -> three percentiles on one scale
- *   4. Which rules are firing?           -> ranked bars, coloured by tier
- *   5. What is the severity mix?         -> labelled bar rows
- *   6. How are alerts being dispositioned? -> labelled bar rows
+ *   1. Where do the scores sit?            -> bars over the supervisory bands
+ *   2. Is alert volume steady?             -> line over time, day or week
+ *   3. How long do alerts stay open?       -> three percentiles on one scale
+ *   4. What is the severity mix?           -> labelled bar rows
+ *   5. How are alerts dispositioned?       -> labelled bar rows
+ *   6. What is the handling risk?          -> four rates, each with its denominator
  *
- *  Every number comes from `/api/analytics/overview` already computed. This file
- *  formats and lays out; it does not derive. That is what keeps one definition of the
- *  median in the system, in SQL, where `verify.py` can assert it.
+ *  Every number is computed by the backend. This file lays out and formats; it derives
+ *  nothing. That is what keeps one definition of the median in the system, in SQL,
+ *  where verify.py can assert it.
+ *
+ *  The four analytics endpoints are fetched together and the screen renders nothing
+ *  until all four resolve. Rendering them as they arrive would let two panels show
+ *  different datasets for a moment after a load — briefly, and wrongly.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -28,32 +32,35 @@ import {
   YAxis,
 } from "recharts";
 
-import { ApiError, Overview, getOverview } from "../api";
+import {
+  ApiError,
+  Distribution,
+  HandlingQuality,
+  OverviewMetrics,
+  TimeBucket,
+  getDistribution,
+  getHandling,
+  getOverview,
+  getTimeseries,
+} from "../api";
 import { BarRow, CHART, ChartTip, Key, Panel } from "../components/charts";
 import EmptyState from "../components/EmptyState";
 import { useDataset } from "../components/Shell";
 import { ErrorState, Loading } from "../components/States";
-import { TIER_LABEL, formatScore } from "../workpaper";
+import { ATTAINABLE_MAX } from "../workpaper";
 
-/* Validated against the dark surface with the dataviz palette checker: all six checks
-   pass, including the all-pairs CVD and normal-vision separation. Do not substitute
-   these by eye -- the previous set failed the normal-vision floor at ΔE 9.4, which
-   means full-colour readers could not reliably separate two adjacent segments. */
-const TIER_COLOR: Record<string, string> = {
-  EXECUTION_GAP: "var(--tier-eg)",
-  NEGATIVE_SPACE: "var(--tier-ns)",
-  ML_CORROBORATION: "var(--tier-ml)",
-};
-
+/** Band colours, matched to the ranking screen's chips. The backend now bands at the
+    same thresholds the table does — they disagreed until 2026-09-06, and verify.py
+    pins them together — so these names are the backend's, not a second vocabulary. */
 const BAND_COLOR: Record<string, string> = {
-  exception: "var(--exception)",
-  caution: "var(--caution)",
-  clear: "var(--clear)",
+  "Exception (> 50)": "var(--exception)",
+  "Caution (10 - 50)": "var(--caution)",
+  "Clear (< 10)": "var(--clear)",
 };
 
 /** Severity carries the reserved status colours for the two levels a supervisor acts
-    on, and text-token ink for the two they do not. Colour marks what matters rather
-    than painting every row for decoration. */
+    on, and measured neutral ink for the two they do not. Colour marks what matters
+    instead of painting every row for decoration. */
 const SEVERITY_COLOR: Record<string, string> = {
   CRITICAL: "var(--exception)",
   HIGH: "var(--caution)",
@@ -62,22 +69,44 @@ const SEVERITY_COLOR: Record<string, string> = {
 };
 
 function minutes(v: number | null): string {
-  if (v === null) return "—";
+  if (v === null || v === undefined) return "—";
   if (v < 90) return `${v.toFixed(0)} min`;
   const h = v / 60;
   return h < 48 ? `${h.toFixed(1)} h` : `${(h / 24).toFixed(1)} d`;
 }
 
+function pct(rate: number): string {
+  return `${(rate * 100).toFixed(1)}%`;
+}
+
+interface Bundle {
+  overview: OverviewMetrics;
+  series: TimeBucket[];
+  score: Distribution;
+  severity: Distribution;
+  disposition: Distribution;
+  handling: HandlingQuality;
+}
+
 export default function OverviewPage() {
   const { version, bumpVersion, refreshDataset } = useDataset();
-  const [data, setData] = useState<Overview | null>(null);
+  const [data, setData] = useState<Bundle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [grain, setGrain] = useState<"day" | "week">("day");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (bucket: "day" | "week") => {
     setError(null);
     try {
-      setData(await getOverview());
+      const [overview, series, score, severity, disposition, handling] =
+        await Promise.all([
+          getOverview(),
+          getTimeseries(bucket),
+          getDistribution("score"),
+          getDistribution("severity"),
+          getDistribution("disposition"),
+          getHandling(),
+        ]);
+      setData({ overview, series, score, severity, disposition, handling });
     } catch (e) {
       setData(null);
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
@@ -85,14 +114,16 @@ export default function OverviewPage() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load, version]);
+    void load(grain);
+  }, [load, version, grain]);
 
-  if (error) return <ErrorState message={error} onRetry={() => void load()} />;
+  if (error) return <ErrorState message={error} onRetry={() => void load(grain)} />;
   if (!data) return <Loading rows={6} label="Loading the overview" />;
 
-  // No data is a screen of its own, not a dashboard of zeros.
-  if (data.record_count === 0) {
+  const { overview: o, series, score, severity, disposition, handling: h } = data;
+
+  // Nothing loaded is a screen of its own, not a dashboard of zeros.
+  if (o.alerts_count === 0) {
     return (
       <EmptyState
         onLoaded={async () => {
@@ -103,15 +134,42 @@ export default function OverviewPage() {
     );
   }
 
-  const series = grain === "day" ? data.volume_by_day : data.volume_by_week;
-  const rules = data.findings_by_rule;
-  const maxRule = Math.max(...rules.map((r) => r.count), 1);
-  const sevTotal = data.severity_mix.reduce((n, s) => n + s.count, 0);
-  const maxSev = Math.max(...data.severity_mix.map((s) => s.count), 1);
-  const dispTotal = data.disposition_mix.reduce((n, s) => n + s.count, 0);
-  const maxDisp = Math.max(...data.disposition_mix.map((s) => s.count), 1);
-  const c = data.closure;
-  const maxClosure = Math.max(c.mean ?? 0, c.median ?? 0, c.p90 ?? 0, 1);
+  const maxSev = Math.max(...severity.items.map((s) => s.count), 1);
+  const maxDisp = Math.max(...disposition.items.map((s) => s.count), 1);
+  const maxClosure = Math.max(
+    h.mean_closure_minutes ?? 0,
+    h.median_closure_minutes ?? 0,
+    h.p90_closure_minutes ?? 0,
+    1,
+  );
+  const volumes = series.map((s) => s.total);
+  const lo = volumes.length ? Math.min(...volumes) : 0;
+  const hi = volumes.length ? Math.max(...volumes) : 0;
+
+  /* Three rates where lower is better, and they are the only things in the bar list.
+     `critical_escalation_rate` is COVERAGE -- criticals escalated over all criticals
+     -- so higher is better, and it is reported separately below rather than as a
+     fourth bar. It sat in this list labelled "Critical unescalated" and coloured
+     amber above 5%, which turned a SOC escalating 99.1% of its CRITICALs into a
+     warning. A panel that mixes directions cannot be read: the eye takes a long bar
+     as a bad bar, and here one long bar was the best number on the screen. */
+  const risks = [
+    {
+      label: "Rapid closure",
+      rate: h.rapid_closure_rate,
+      of: "of HIGH and CRITICAL alerts closed inside the two-minute threshold EG-001 keys on",
+    },
+    {
+      label: "Undocumented dismissal",
+      rate: h.undocumented_dismissal_rate,
+      of: "of HIGH and CRITICAL alerts dismissed with no investigation note — EG-004",
+    },
+    {
+      label: "Duplicated notes",
+      rate: h.note_duplication_rate,
+      of: "of all records carrying a note repeated across unrelated cases — EG-003",
+    },
+  ];
 
   return (
     <>
@@ -120,8 +178,7 @@ export default function OverviewPage() {
           <h1 className="hd">Overview</h1>
           <p className="hd__sub">
             The whole population at a glance — how risk is distributed, how alerts
-            arrive, how quickly they are closed, and which supervisory rules are
-            producing the findings.
+            arrive, how quickly they are closed, and where handling quality is thin.
           </p>
         </div>
       </div>
@@ -129,39 +186,39 @@ export default function OverviewPage() {
       <section className="stats" aria-label="Dataset summary">
         <div className="stat">
           <span className="lbl">Entities under review</span>
-          <span className="stat__value">{data.entity_count}</span>
+          <span className="stat__value">{o.entities_count}</span>
           <span className="stat__sub">
-            across <b>{data.sector_count}</b>{" "}
-            {data.sector_count === 1 ? "sector" : "sectors"} · <b>{data.clean_count}</b>{" "}
-            with no findings
+            <b>{o.entities_count - o.attention_entities_count}</b> with no findings
           </span>
         </div>
         <div className="stat">
           <span className="lbl">Alerts analysed</span>
-          <span className="stat__value">{data.record_count.toLocaleString()}</span>
+          <span className="stat__value">{o.alerts_count.toLocaleString()}</span>
           <span className="stat__sub">
             <b>
-              {Math.round(data.record_count / data.entity_count).toLocaleString()}
+              {o.entities_count
+                ? Math.round(o.alerts_count / o.entities_count).toLocaleString()
+                : 0}
             </b>{" "}
             per entity on average
           </span>
         </div>
         <div className="stat">
           <span className="lbl">Findings raised</span>
-          <span className="stat__value">{data.finding_count.toLocaleString()}</span>
+          <span className="stat__value">{o.findings_count.toLocaleString()}</span>
           <span className="stat__sub">
-            on <b>{data.attention_count}</b> of {data.entity_count} entities
+            on <b>{o.attention_entities_count}</b> of {o.entities_count} entities
           </span>
         </div>
         <div className="stat">
           <span className="lbl">Median closure</span>
-          <span className="stat__value">{minutes(c.median)}</span>
+          <span className="stat__value">{minutes(o.median_closure_minutes)}</span>
           <span className="stat__sub">
-            {c.p90 === null ? (
+            {o.p90_closure_minutes === null ? (
               "no closed alerts to measure"
             ) : (
               <>
-                <b>{minutes(c.p90)}</b> at the 90th percentile
+                <b>{minutes(o.p90_closure_minutes)}</b> at the 90th percentile
               </>
             )}
           </span>
@@ -171,30 +228,21 @@ export default function OverviewPage() {
       <div className="grid">
         <Panel
           title="Where the scores sit"
-          caption="Entities per 10-point band of supervisory risk score, over the attainable 0–86.5 range. Bars carry the same banding the ranking screen colours by."
+          caption={`Entities per supervisory band. The scale runs to ${ATTAINABLE_MAX}, not 100, and these are the same bands at the same thresholds that colour the ranking screen — they disagreed until the two were pinned together.`}
           table={{
-            columns: ["Score band", "Entities", "Supervisory band"],
-            rows: data.score_distribution.map((b) => [b.label, b.count, b.band]),
+            columns: ["Band", "Entities", "Share"],
+            rows: score.items.map((i) => [i.name, i.count, `${i.percentage}%`]),
           }}
-          actions={
-            <Key
-              items={[
-                { label: "clear", color: "var(--clear)" },
-                { label: "caution", color: "var(--caution)" },
-                { label: "exception", color: "var(--exception)" },
-              ]}
-            />
-          }
         >
           <ResponsiveContainer width="100%" height={190}>
             <BarChart
-              data={data.score_distribution}
+              data={score.items}
               margin={{ top: 4, right: 4, bottom: 0, left: -22 }}
             >
               <CartesianGrid stroke={CHART.grid} vertical={false} />
               <XAxis
-                dataKey="label"
-                tick={CHART.axisTick}
+                dataKey="name"
+                tick={{ ...CHART.axisTick, fontSize: 10 }}
                 axisLine={{ stroke: CHART.grid }}
                 tickLine={false}
               />
@@ -204,10 +252,10 @@ export default function OverviewPage() {
                 tickLine={false}
                 allowDecimals={false}
               />
-              <ChartTip labelSuffix=" score band" />
-              <Bar dataKey="count" name="Entities" radius={[4, 4, 0, 0]} maxBarSize={28}>
-                {data.score_distribution.map((b) => (
-                  <Cell key={b.label} fill={BAND_COLOR[b.band]} />
+              <ChartTip />
+              <Bar dataKey="count" name="Entities" radius={[4, 4, 0, 0]} maxBarSize={54}>
+                {score.items.map((i) => (
+                  <Cell key={i.name} fill={BAND_COLOR[i.name] ?? "var(--mark-2)"} />
                 ))}
               </Bar>
             </BarChart>
@@ -218,14 +266,13 @@ export default function OverviewPage() {
           title="Alert volume over time"
           caption={
             `Alerts opened per ${grain} across the whole population, over ` +
-            `${data.volume.days} days. Daily volume runs between ` +
-            `${data.volume.per_day_min.toLocaleString()} and ` +
-            `${data.volume.per_day_max.toLocaleString()} — a flat line here means a ` +
-            `steady intake, not a chart that failed to draw.`
+            `${series.length} ${grain === "day" ? "days" : "weeks"}. Volume runs ` +
+            `between ${lo.toLocaleString()} and ${hi.toLocaleString()} — a flat line ` +
+            `here means a steady intake, not a chart that failed to draw.`
           }
           table={{
             columns: [grain === "day" ? "Day" : "Week beginning", "Alerts"],
-            rows: series.map((b) => [b.bucket, b.count]),
+            rows: series.map((b) => [b.period, b.total]),
           }}
           actions={
             <div className="toggle" role="group" aria-label="Time grain">
@@ -247,7 +294,7 @@ export default function OverviewPage() {
             <LineChart data={series} margin={{ top: 4, right: 6, bottom: 0, left: -18 }}>
               <CartesianGrid stroke={CHART.grid} vertical={false} />
               <XAxis
-                dataKey="bucket"
+                dataKey="period"
                 tick={CHART.axisTick}
                 axisLine={{ stroke: CHART.grid }}
                 tickLine={false}
@@ -255,9 +302,11 @@ export default function OverviewPage() {
               />
               <YAxis tick={CHART.axisTick} axisLine={false} tickLine={false} />
               <ChartTip />
+              {/* One series. A second, on its own scale, would need its own panel —
+                  never a second y-axis. */}
               <Line
                 type="monotone"
-                dataKey="count"
+                dataKey="total"
                 name="Alerts opened"
                 stroke="var(--accent)"
                 strokeWidth={2}
@@ -271,95 +320,102 @@ export default function OverviewPage() {
         <Panel
           title="How long alerts stay open"
           caption={
-            c.median === null
+            h.median_closure_minutes === null
               ? "No alert in this dataset carries a closure time, so there is nothing to measure."
-              : `Three points on one scale, over ${c.measured_on.toLocaleString()} closed alerts. The gap between the median and the 90th percentile is the tail — the mean alone hides it.`
+              : `Three points on one scale, over ${h.total_records.toLocaleString()} records. The gap between the median and the 90th percentile is the tail — the mean alone hides it.`
           }
           table={{
             columns: ["Statistic", "Minutes"],
             rows: [
-              ["Mean", c.mean ?? "—"],
-              ["Median", c.median ?? "—"],
-              ["90th percentile", c.p90 ?? "—"],
+              ["Mean", h.mean_closure_minutes ?? "—"],
+              ["Median", h.median_closure_minutes ?? "—"],
+              ["90th percentile", h.p90_closure_minutes ?? "—"],
             ],
           }}
         >
-          {c.median === null ? (
+          {h.median_closure_minutes === null ? (
             <p className="panel__none">
-              Closure time is derived from <code>closed_at</code> or supplied as{" "}
+              Closure time is derived from <code>closed_at</code>, or supplied as{" "}
               <code>closure_time_minutes</code>. This export carries neither, so the
-              panel is empty rather than showing zero — which would read as a SOC that
+              panel says so rather than drawing zero — which would read as a SOC that
               closes everything instantly.
             </p>
           ) : (
             <div className="brows">
-              <BarRow label="Mean" value={c.mean ?? 0} max={maxClosure}
-                      color="var(--mark-2)" suffix=" min" />
-              <BarRow label="Median" value={c.median ?? 0} max={maxClosure}
-                      color="var(--accent)" suffix=" min" />
-              <BarRow label="90th percentile" value={c.p90 ?? 0} max={maxClosure}
-                      color="var(--caution)" suffix=" min" />
-              {c.unclosed > 0 && (
-                <p className="panel__foot">
-                  {c.unclosed.toLocaleString()} alerts have no closure time and are
-                  excluded, not counted as zero.
-                </p>
-              )}
+              <BarRow label="Mean" value={h.mean_closure_minutes ?? 0}
+                      max={maxClosure} color="var(--mark-2)" suffix=" min" />
+              <BarRow label="Median" value={h.median_closure_minutes}
+                      max={maxClosure} color="var(--accent)" suffix=" min" />
+              <BarRow label="90th percentile" value={h.p90_closure_minutes ?? 0}
+                      max={maxClosure} color="var(--caution)" suffix=" min" />
             </div>
           )}
         </Panel>
 
         <Panel
-          title="Which rules are firing"
-          caption="Findings per rule across every entity, ranked. Colour is the scoring tier the rule belongs to."
+          title="Handling quality"
+          caption="Three conditions the execution-gap rules key on, as a share of the alerts each could apply to. Lower is better for all three — a rate without its denominator is not a measurement, and a panel that mixes directions cannot be read at a glance."
           table={{
-            columns: ["Rule", "Tier", "Findings", "Total weight"],
-            rows: rules.map((r) => [
-              r.rule_id, TIER_LABEL[r.tier] ?? r.tier, r.count, r.weight,
-            ]),
+            columns: ["Indicator", "Rate", "Denominator and rule"],
+            rows: [
+              ...risks.map((r) => [r.label, pct(r.rate), r.of]),
+              [
+                "Critical escalation coverage",
+                pct(h.critical_escalation_rate),
+                "of CRITICAL alerts escalated — higher is better",
+              ],
+            ],
+          }}
+        >
+          <div className="brows">
+            {risks.map((r) => (
+              <BarRow
+                key={r.label}
+                label={r.label}
+                value={Number((r.rate * 100).toFixed(1))}
+                // Scaled against a fixed 25% rather than the largest of three near-zero
+                // rates, which would magnify 0.3% into a full bar and make a clean
+                // population look alarming.
+                max={25}
+                color={r.rate > 0.05 ? "var(--caution)" : "var(--mark-2)"}
+                suffix="%"
+              />
+            ))}
+          </div>
+          <p className="panel__foot">
+            Bars are drawn against a fixed 25% so a low rate reads as low. Separately,
+            and pointing the other way:{" "}
+            <b className="num">{pct(h.critical_escalation_rate)}</b> of CRITICAL alerts
+            were escalated — coverage, where higher is better. Measured over{" "}
+            {h.total_records.toLocaleString()} records.
+          </p>
+        </Panel>
+
+        <Panel
+          title="Severity mix"
+          caption="Every alert by the severity its SOC assigned. The two levels a supervisor acts on carry the reserved severity colours; the rest are labelled."
+          table={{
+            columns: ["Severity", "Alerts", "Share"],
+            rows: severity.items.map((s) => [s.name, s.count, `${s.percentage}%`]),
           }}
           actions={
             <Key
               items={[
-                { label: "Execution gap", color: "var(--tier-eg)" },
-                { label: "Negative space", color: "var(--tier-ns)" },
-                { label: "ML corroboration", color: "var(--tier-ml)" },
+                { label: "critical", color: "var(--exception)" },
+                { label: "high", color: "var(--caution)" },
               ]}
             />
           }
         >
           <div className="brows">
-            {rules.map((r) => (
+            {severity.items.map((s) => (
               <BarRow
-                key={r.rule_id}
-                label={r.rule_id}
-                value={r.count}
-                max={maxRule}
-                color={TIER_COLOR[r.tier]}
-              />
-            ))}
-          </div>
-        </Panel>
-
-        <Panel
-          title="Severity mix"
-          caption="Every alert in the dataset by the severity its SOC assigned. The two levels a supervisor acts on carry the reserved severity colours; the rest are labelled."
-          table={{
-            columns: ["Severity", "Alerts", "Share"],
-            rows: data.severity_mix.map((s) => [
-              s.key, s.count, `${((s.count / sevTotal) * 100).toFixed(1)}%`,
-            ]),
-          }}
-        >
-          <div className="brows">
-            {data.severity_mix.map((s) => (
-              <BarRow
-                key={s.key}
-                label={s.key}
+                key={s.name}
+                label={s.name}
                 value={s.count}
-                share={(s.count / sevTotal) * 100}
+                share={s.percentage}
                 max={maxSev}
-                color={SEVERITY_COLOR[s.key] ?? "var(--ink-faint)"}
+                color={SEVERITY_COLOR[s.name] ?? "var(--mark-2)"}
               />
             ))}
           </div>
@@ -367,21 +423,19 @@ export default function OverviewPage() {
 
         <Panel
           title="How alerts are dispositioned"
-          caption="The outcome each alert was closed with. A dataset dominated by false positives and benign closures is the pattern the execution-gap rules exist to interrogate."
+          caption="The outcome each alert was closed with. A population dominated by false positives and benign closures is the pattern the execution-gap rules exist to interrogate."
           table={{
             columns: ["Disposition", "Alerts", "Share"],
-            rows: data.disposition_mix.map((s) => [
-              s.key, s.count, `${((s.count / dispTotal) * 100).toFixed(1)}%`,
-            ]),
+            rows: disposition.items.map((s) => [s.name, s.count, `${s.percentage}%`]),
           }}
         >
           <div className="brows">
-            {data.disposition_mix.map((s) => (
+            {disposition.items.map((s) => (
               <BarRow
-                key={s.key}
-                label={s.key.replace(/_/g, " ").toLowerCase()}
+                key={s.name}
+                label={s.name.replace(/_/g, " ").toLowerCase()}
                 value={s.count}
-                share={(s.count / dispTotal) * 100}
+                share={s.percentage}
                 max={maxDisp}
                 color="var(--accent)"
               />
@@ -391,9 +445,9 @@ export default function OverviewPage() {
       </div>
 
       <p className="note">
-        Every figure on this screen is computed by the backend and served whole, so a
-        number here and the same number on an entity's schedule cannot disagree. The
-        attainable maximum score is {formatScore(86.5)}, not 100 — the ML tier can
+        Every figure here is computed by the backend and served whole, so a number on
+        this screen and the same number on an entity's schedule cannot disagree. The
+        attainable maximum score is {ATTAINABLE_MAX}, not 100 — the ML tier can
         contribute at most 1.5.
       </p>
     </>

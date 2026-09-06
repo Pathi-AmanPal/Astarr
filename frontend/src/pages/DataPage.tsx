@@ -18,15 +18,15 @@ import Crumbs from "../components/Crumbs";
 import { useDataset } from "../components/Shell";
 import { ErrorState, Loading } from "../components/States";
 
-function when(iso: string): string {
+function when(iso: string | null): string {
+  if (!iso) return "—";
   // The server stamps a naive local timestamp; render it as written rather than
   // shifting it through a timezone the operator never mentioned.
   return iso.replace("T", " ").slice(0, 19);
 }
 
 export default function DataPage() {
-  const { version, busy, bumpVersion, openPicker, refreshDataset, resetDemo } =
-    useDataset();
+  const { version, bumpVersion, openPicker, refreshDataset } = useDataset();
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,9 +38,12 @@ export default function DataPage() {
     setLoading(true);
     setError(null);
     try {
-      setDataset(await getDataset());
+      const info = await getDataset();
+      // The endpoint reports the empty state in the body rather than as a 404, so
+      // "nothing loaded" arrives as a successful response and has to be read, not
+      // caught. A 404 is still handled below in case an older backend answers.
+      setDataset(info.source === "empty" || !info.loaded_at ? null : info);
     } catch (e) {
-      // 404 is the empty state, not a failure.
       if (e instanceof ApiError && e.status === 404) setDataset(null);
       else setError(e instanceof ApiError ? e.message : "Something went wrong.");
     } finally {
@@ -139,14 +142,6 @@ export default function DataPage() {
               <div className="prov__actions">
                 <button type="button" className="btn btn--primary" onClick={openPicker}>
                   Replace with another export
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => void resetDemo()}
-                  disabled={busy}
-                >
-                  Restore demo seed
                 </button>
                 <button
                   type="button"

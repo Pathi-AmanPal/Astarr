@@ -25,7 +25,6 @@ import {
   DatasetInfo,
   TEMPLATE_URL,
   getDataset,
-  resetDemo,
   uploadDataset,
 } from "../api";
 import LineSidebar from "./LineSidebar";
@@ -41,9 +40,6 @@ interface DatasetState {
   bumpVersion: () => void;
   /** Refetch provenance after a change made elsewhere. */
   refreshDataset: () => Promise<void>;
-  /** Restore the built-in seed. Lives here rather than on the Data screen because
-      it shares the shell's busy state and its error banner. */
-  resetDemo: () => Promise<void>;
 }
 
 const DatasetContext = createContext<DatasetState>({
@@ -53,7 +49,6 @@ const DatasetContext = createContext<DatasetState>({
   openPicker: () => {},
   bumpVersion: () => {},
   refreshDataset: async () => {},
-  resetDemo: async () => {},
 });
 
 export const useDataset = () => useContext(DatasetContext);
@@ -79,7 +74,6 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [version, setVersion] = useState(0);
   const [uploading, setUploading] = useState(false);
-  const [resetting, setResetting] = useState(false);
   // A rejected upload reports every problem it found at once, so the operator
   // fixes the file in one pass instead of re-uploading to discover the next one.
   const [uploadError, setUploadError] =
@@ -90,11 +84,16 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [mappingNotes, setMappingNotes] = useState<string[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const busy = uploading || resetting;
+  const busy = uploading;
 
   const refreshDataset = useCallback(async () => {
     try {
-      setDataset(await getDataset());
+      const info = await getDataset();
+      // The endpoint now names the empty state in the body rather than answering 404,
+      // so "nothing loaded" arrives as a success and has to be read. Without this the
+      // bar would caption an empty tool "demo seed · 0 rec" -- provenance for a
+      // dataset that is not there, which is worse than no caption at all.
+      setDataset(info.source === "empty" || !info.loaded_at ? null : info);
     } catch {
       // Provenance is secondary. A schedule that renders while /api/dataset
       // fails is still a correct schedule; it simply loses its caption.
@@ -131,23 +130,6 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function onReset() {
-    setResetting(true);
-    setUploadError(null);
-    setMappingNotes([]);
-    try {
-      await resetDemo();
-      await refreshDataset();
-      setVersion((v) => v + 1);
-    } catch (e) {
-      setUploadError({
-        message: e instanceof ApiError ? e.message : "Reset failed.",
-        details: [],
-      });
-    } finally {
-      setResetting(false);
-    }
-  }
 
   const openPicker = useCallback(() => fileInput.current?.click(), []);
   const bumpVersion = useCallback(() => setVersion((v) => v + 1), []);
@@ -156,7 +138,6 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     <DatasetContext.Provider
       value={{
         dataset, version, busy, openPicker, bumpVersion, refreshDataset,
-        resetDemo: onReset,
       }}
     >
       <a className="skip" href="#main">Skip to content</a>

@@ -3,7 +3,8 @@
 The database is seeded automatically on startup when missing or empty, so no manual
 seeding step ever exists (NFR 4). The demo seed remains the default dataset and the
 reset target; `POST /api/dataset/upload` replaces it with a real alert export, and
-`POST /api/demo/reset` puts the demo back.
+There is no built-in dataset and no reset: `DELETE /api/dataset` returns the tool
+to its empty state, and the operator loads a file to leave it.
 
 Still no authentication and still no outbound network calls: an upload is read from the
 request body and written to the local DuckDB file, nothing leaves the machine.
@@ -28,7 +29,7 @@ import ingest
 import models
 from detection import run_detection
 from scoring import entity_scores, ranked_entities
-from seed import seed
+
 
 RECORD_COLUMNS = [
     "record_id", "entity_id", "asset_id", "severity", "category", "opened_at",
@@ -39,21 +40,6 @@ RECORD_COLUMNS = [
 # read into memory first. Well above the 50k-row ceiling ingest.py enforces.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-DEMO_LABEL = "Synthetic demo dataset"
-
-# One DuckDB connection is shared by every request, and FastAPI runs sync endpoints on
-# a threadpool -- so two requests arriving together execute on the same connection
-# concurrently and interleave each other's result sets. The observed failure was a
-# `ValueError: dictionary update sequence element #0 has length 1` out of scoring.py
-# and a spurious 404 from the entity lookup, i.e. a corrupted read, not a crash at the
-# point of misuse.
-#
-# It stayed latent while every screen made one call at a time. The detail page now
-# fetches its findings and its ML profile together, which is what surfaced it.
-#
-# Serialising is the right trade here rather than a connection pool: the dataset is a
-# few hundred rows, every query is sub-millisecond, and a supervisory tool has one
-# reader. Correctness over a concurrency win nobody can measure.
 _db_lock = threading.RLock()
 
 
@@ -70,34 +56,13 @@ def serialised(fn):
     return wrapper
 
 
-def _seed_demo(con) -> tuple[int, int]:
-    """Load the built-in demo dataset and recompute. Returns (entities, findings)."""
-    entities_loaded, records_loaded = seed(con)
-    findings_generated = run_detection(con)
-    db.set_dataset_meta(con, source="demo_seed", label=DEMO_LABEL,
-                        entity_count=entities_loaded, record_count=records_loaded)
-    return entities_loaded, findings_generated
-
-
-def _ensure_seeded(con) -> None:
-    if db.is_empty(con):
-        _seed_demo(con)
-    elif db.dataset_meta(con) is None:
-        # A database written before provenance existed. Label it from what is actually
-        # in it rather than guessing, and never re-seed over a user's uploaded data.
-        entity_count = con.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-        record_count = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        db.set_dataset_meta(con, source="demo_seed", label=DEMO_LABEL,
-                            entity_count=entity_count, record_count=record_count)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     con = db.connect()
-    _ensure_seeded(con)
     app.state.con = con
     yield
     con.close()
+
 
 
 app = FastAPI(title="SAT-SA - Supervisory Analytics", lifespan=lifespan)
@@ -118,6 +83,15 @@ app = FastAPI(title="SAT-SA - Supervisory Analytics", lifespan=lifespan)
 # this same origin and no request goes through here at all.
 app.add_middleware(
     CORSMiddleware,
+    # Any loopback port, not a fixed list. Vite takes the next free port when its
+    # default is occupied -- 5174, 5175 -- and a pinned allowlist turns that ordinary
+    # event into a blocked response. The browser reports a CORS rejection to fetch()
+    # as an indistinct network error, so the UI then says "cannot reach backend" about
+    # a backend that is running and answering. That has already cost real time here.
+    #
+    # Not a widening: the pattern is anchored at both ends, so it admits only
+    # 127.0.0.1, ::1 and the literal name `localhost` -- nothing that is not already
+    # on the machine -- and refuses localhost.evil.com, a domain anyone can register.
     allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
@@ -268,59 +242,74 @@ def entity_ml_profile(entity_id: str):
     }
 
 
+# --- Analytics endpoints (v2 Analytics Workspace) --------------------------------
+
+@app.get("/api/analytics/overview")
+@serialised
+def analytics_overview():
+    """Headline dataset metrics."""
+    return analytics.get_overview_metrics(app.state.con)
+
+
+@app.get("/api/analytics/timeseries")
+@serialised
+def analytics_timeseries(bucket: str = "day"):
+    """Time-series alert volume bucketed by day or week."""
+    if bucket not in ("day", "week"):
+        raise HTTPException(status_code=400, detail={"error": "bucket must be 'day' or 'week'"})
+    return analytics.get_timeseries_metrics(app.state.con, bucket=bucket)
+
+
+@app.get("/api/analytics/distribution")
+@serialised
+def analytics_distribution(by: str = "severity"):
+    """Distribution metric breakdowns."""
+    if by not in ("severity", "category", "disposition", "score"):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "by must be one of severity, category, disposition, score"}
+        )
+    return analytics.get_distribution_metrics(app.state.con, by=by)
+
+
+@app.get("/api/analytics/handling")
+@serialised
+def analytics_handling():
+    """Handling quality percentiles and risk indicators."""
+    return analytics.get_handling_quality(app.state.con)
+
+
+@app.get("/api/tree")
+@serialised
+def case_tree():
+    """Full 5-level case tree: Entity -> Tier -> Rule -> Instance -> Records."""
+    return analytics.get_case_tree(app.state.con)
+
+
 @app.get("/api/dataset", response_model=models.DatasetInfo)
 @serialised
 def dataset_info():
+
     """Provenance for the loaded dataset, shown in the masthead."""
     meta = db.dataset_meta(app.state.con)
     if meta is None:
-        raise HTTPException(status_code=404, detail={"error": "No dataset loaded"})
+        return {
+            "source": "empty",
+            "label": "No dataset loaded",
+            "loaded_at": None,
+            "entity_count": 0,
+            "record_count": 0,
+        }
     return meta
 
 
 @app.delete("/api/dataset", response_model=models.ClearResult)
 @serialised
 def dataset_clear():
-    """Wipe every table and return to the empty state.
-
-    Destructive and deliberately unguarded on the server: the confirmation belongs in
-    the UI, where the operator can see what they are about to lose. What the server
-    guarantees is that it is complete -- findings, ml_profile, records, entities and
-    the provenance row all go, so nothing survives to make the next screen half-true.
-
-    Note the one asymmetry with the PRD: `seed.py` still exists on this branch, and
-    startup seeds an empty database. So a clear leaves the tool empty until the server
-    is restarted, at which point the demo seed returns. Removing the seed is a change
-    to the regression suite's ground truth and is not smuggled in behind a frontend
-    phase.
-    """
+    """Wipe all dataset records, findings, and metadata, returning to empty state."""
     con = app.state.con
-    before = db.dataset_meta(con) or {}
     db.wipe(con)
-    return {
-        "status": "dataset_cleared",
-        "entities_removed": before.get("entity_count", 0),
-        "records_removed": before.get("record_count", 0),
-    }
-
-
-@app.get("/api/analytics/overview", response_model=models.Overview)
-@serialised
-def analytics_overview():
-    """Every figure the Overview screen renders, computed server-side.
-
-    One request, not six: the screen is a single view of one dataset, and six endpoints
-    would let its panels disagree with each other if a load landed between two of them.
-    """
-    con = app.state.con
-    data = analytics.overview(con)
-    data.pop("_entity_ids", None)
-    # The score distribution is built from the scored entities rather than recomputed
-    # in SQL. There is exactly one implementation of the weighted-tier formula in this
-    # system and it is in scoring.py; a second one in a query would be a second answer.
-    scores = [e["risk_score"] for e in ranked_entities(con)]
-    data["score_distribution"] = analytics.score_distribution(scores) if scores else []
-    return data
+    return {"status": "dataset_cleared"}
 
 
 @app.get("/api/dataset/template.csv", include_in_schema=False)
@@ -340,7 +329,7 @@ def dataset_template():
 
 @app.post("/api/dataset/upload", response_model=models.UploadResult)
 async def dataset_upload(file: UploadFile = File(...)):
-    """Replace the demo dataset with an uploaded alert export.
+    """Replace the current dataset with an uploaded alert export.
 
     Rejected uploads leave the previous dataset untouched: parsing and validation both
     complete before anything is written, so a bad file cannot leave the tool holding
@@ -385,9 +374,8 @@ async def dataset_upload(file: UploadFile = File(...)):
         )
 
     con = app.state.con
-    # The lock is taken around the database work only, never across an await: this
-    # endpoint runs on the event loop, and holding a blocking lock over a suspension
-    # point would stall every other request rather than merely serialise this one.
+    label = os.path.basename(file.filename or "uploaded.csv")
+
     try:
         with _db_lock:
             if entities is None:
@@ -430,14 +418,15 @@ async def dataset_upload(file: UploadFile = File(...)):
         )
     except Exception as exc:
         # Anything else really is indeterminate -- a failure part-way through the
-        # insert, or in detection after the rows landed. Restore the demo rather than
-        # serve a half-written schedule.
+        # insert, or in detection after the rows landed. Wipe rather than serve a
+        # half-written schedule. Note this is exactly why the IngestError branch above
+        # has to come first: a malformed file is not indeterminate, and destroying the
+        # operator's loaded dataset over a bad severity value is not a recovery.
         with _db_lock:
-            _seed_demo(con)
+            db.wipe(con)
         raise HTTPException(
             status_code=500,
-            detail={"error": f"Load failed and the demo dataset was restored: {exc}",
-                    "details": []},
+            detail={"error": f"Load failed: {exc}", "details": []},
         )
 
     return {
@@ -449,21 +438,6 @@ async def dataset_upload(file: UploadFile = File(...)):
         "mapping_notes": mapping_notes,
     }
 
-
-@app.post("/api/demo/reset", response_model=models.ResetResult)
-@serialised
-def demo_reset():
-    """Restore the built-in demo dataset, discarding any upload."""
-    con = app.state.con
-    try:
-        entities_loaded, findings_generated = _seed_demo(con)
-    except Exception as exc:  # surfaced to the UI as a retry-able banner
-        raise HTTPException(status_code=500, detail={"error": f"Reset failed: {exc}"})
-    return {
-        "status": "reset_complete",
-        "entities_loaded": entities_loaded,
-        "findings_generated": findings_generated,
-    }
 
 
 # --- Static frontend (container builds only) -------------------------------------

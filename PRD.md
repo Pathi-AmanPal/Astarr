@@ -28,7 +28,7 @@ rewritten and must not be.**
 | `backend/config.py` | Validating loader for the above | Keep |
 | `backend/ml.py` | Isolation Forest + SHAP corroboration | Keep; extend read-only |
 | `backend/ingest.py` | CSV/JSON validating parser | Keep; extend |
-| `backend/verify.py` | The regression suite. Currently 190 checks | **Extend. Never weaken.** |
+| `backend/verify.py` | The regression suite. Currently 110 checks | **Extend. Never weaken.** |
 | `backend/db.py` | DuckDB schema and connection | Extend with new tables |
 
 ### 1.2 Replace
@@ -173,92 +173,12 @@ and never regenerate it casually; regenerating changes every expected count in t
 Keep every existing assertion that is still meaningful. The counts will change; the
 *structure* of the suite must not weaken.
 
-### 4.3a Schema normalisation — mapping is allowed, guessing is not
-
-*Added 2026-09-06, implemented in `ingest.py`.*
-
-No two CSEs name their columns the same way. An `alert_id` / `Org_ID` / `Priority` /
-`Created At` / `Resolution` export is the normal case, not the exception, and a parser
-that only accepts this repo's spellings makes every submission a hand-transformation
-job first. The parser therefore **maps** onto the canonical schema. It does not guess,
-and it never maps silently.
-
-Three properties are binding and asserted in `verify.py`:
-
-1. **Exact alias matching only.** A header matches after case, spaces, hyphens,
-   underscores and punctuation are stripped — `Escalated?` matches `escalated`. There is
-   no fuzzy matching and no edit distance: `sev` maps because it is in `COLUMN_ALIASES`,
-   not because it resembles `severity`. Adding a spelling means adding a table entry.
-2. **Ambiguity stops the upload.** Two headers claiming one canonical field (`severity`
-   *and* `priority`) is refused, naming both. Either could be right and the tool has no
-   basis to choose.
-3. **Every substitution is reported.** `POST /api/dataset/upload` returns
-   `mapping_notes: string[]` — one entry per translated column plus one listing the
-   columns it ignored — and the UI shows them after a successful load. An empty list for
-   a canonical file, so the notice means something when it appears.
-
-Value scales are normalised the same way: `P1` / `Sev 1` / `1` / `Urgent` → `CRITICAL`,
-`TP` / `Confirmed` → `TRUE_POSITIVE`, `No Action Required` → `BENIGN`. An unrecognised
-value is still a rejected row with a line number, never a defaulted one.
-
-This does not weaken §4.4's rule below. Renaming a column the operator supplied is not
-repairing data; inventing a value they did not supply is, and that is still refused.
-
-### 4.3b Phase 3 status
-
-*Recorded 2026-09-06.*
-
-**Built:** the line sidebar and shell, the designed empty state (drag-and-drop over a
-real file input, line-numbered rejection, schema reference), the Data screen
-(provenance, confirmed destructive clear, template download), and the Overview's six
-panels over the Phase 2 analytics endpoints.
-
-**Not built, and deliberately not stubbed:** the Cases tree and `/cases`. There is no
-nav item for it — a destination that leads to a placeholder is the anti-pattern in
-§9.2 — so the sidebar names the absence in one line instead.
-
-**Phases 1–3 were built in parallel and had to be reconciled.** Phase 1 (seed removal,
-`DELETE /api/dataset`, the regression fixture) and Phase 2 (the analytics endpoints and
-the case tree) landed on the branch while Phase 3 was in progress against an older
-checkout. Phase 3 had independently written a `DELETE /api/dataset` and its own
-`analytics.py`; both were dropped in favour of the merged versions, and the Overview
-was rewritten against the four endpoints Phase 2 actually exposes rather than the
-single one Phase 3 had assumed. Two commits were lost to a force-push in between and
-were re-applied. Three defects surfaced in the reconciliation and are recorded in §4.3c.
-
-### 4.3c Defects found while wiring the screens up
-
-Kept here because each is the kind that survives a passing test suite.
-
-1. **A malformed upload destroyed the loaded dataset.** The CSV path validates inside
-   `load_streaming`, so an `IngestError` was raised inside the endpoint's `try` and
-   fell through to the generic `except Exception`, which answered 500 and then wiped
-   the database. A supervisor with real data loaded who uploaded a file with one bad
-   severity value lost it and was told the server had failed. `verify.py` asserted
-   atomicity against `load_streaming` directly — correctly, which is exactly why this
-   got through: the defect was one layer above the test. Now a 400 carrying the
-   line-numbered problems, asserted at the endpoint.
-
-2. **The score histogram and the ranking table used different bands.** Analytics
-   banded at `>= 40 / >= 15`; the ranking screen at `> 50 / >= 10`. An entity scoring
-   45 was *Exception* on the Overview and *caution* on the table that screen links to.
-   Aligned to 50/10 — the pair with a recorded reason, since it preserves the Phase 1
-   three-band grouping exactly under weighted tiers — and `verify.py` now fails if the
-   two ever diverge again.
-
-3. **A good result was rendered as a warning.** `critical_escalation_rate` is
-   *coverage* — criticals escalated over all criticals — so higher is better. The
-   Overview listed it beside three risk rates as "Critical unescalated" and coloured
-   99.1% amber, turning the best figure on the screen into an alarm. It is now
-   reported separately, in its own direction, and a check pins the definition so a
-   later change cannot silently invert it.
-
 ### 4.4 Data lifecycle endpoints
 
 | Method | Path | Behaviour |
 | --- | --- | --- |
 | `POST` | `/api/dataset/upload` | multipart CSV/JSON. Validate fully, then replace. Exists today — keep |
-| `DELETE` | `/api/dataset` | Wipe everything and return to the empty state. **Built 2026-09-06** |
+| `DELETE` | `/api/dataset` | Wipe everything and return to the empty state. **New** |
 | `GET` | `/api/dataset` | Provenance: source, label, loaded_at, counts. Exists — keep |
 | `GET` | `/api/dataset/template.csv` | Exists — keep |
 
@@ -275,20 +195,6 @@ admitting it. Preserve every rejection case in `verify.py`.
 This is the analytical core of v2. **Every metric below is computed server-side and
 exposed through the API. The frontend performs no analysis beyond formatting.** That
 keeps one definition of every number, and keeps it testable in `verify.py`.
-
-### 5.0a Where these live
-
-*Built 2026-09-06.* `GET /api/analytics/overview` serves the whole Overview screen in
-one response — one request rather than six, so its panels cannot disagree with each
-other if a load lands between two of them. `backend/analytics.py` holds the queries.
-
-Two rules the module keeps, asserted in `verify.py`:
-
-- **Absent is not zero.** A dataset with no closed alert returns `null` percentiles,
-  never `0.0`, which would render as a SOC that closes everything instantly.
-- **No second implementation of a number.** The score histogram is bucketed from
-  `scoring.ranked_entities`, not recomputed in SQL. There is one weighted-tier formula
-  in this system.
 
 ### 5.1 Computable from the current schema
 
@@ -809,7 +715,7 @@ fetches individual findings at all.
 
 ## 13. Verification
 
-`verify.py` is the gate. It currently reports **190 checks, 0 failures** and must never
+`verify.py` is the gate. It currently reports **110 checks, 0 failures** and must never
 be weakened to accommodate a change. Extend it:
 
 **Existing, keep (adapted to the sample fixture):** every rule fires exactly where

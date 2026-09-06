@@ -1362,7 +1362,9 @@ tbody tr:last-child td { border-bottom: 0; }
 
 .brow {
   display: grid;
-  grid-template-columns: 108px minmax(0, 1fr) 74px 52px;
+  /* Wide enough for "Undocumented dismissal" and "90th percentile" unabbreviated. A
+     truncated metric label is a metric nobody can check. */
+  grid-template-columns: 168px minmax(0, 1fr) 74px 52px;
   align-items: center;
   gap: 10px;
   font-size: 12px;

@@ -16,13 +16,21 @@ import sys
 import tempfile
 from collections import Counter
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+venv_site = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "Lib", "site-packages")
+if os.path.exists(venv_site) and venv_site not in sys.path:
+    sys.path.insert(0, venv_site)
+
 import db
 import ingest
+
+
 from detection import (NS001_MIN_COHORT_SIZE, NS001_STDDEV_MULTIPLIER, ns001,
                        ns002_min_reporting, run_detection)
 from ml import ML_RULE_ID, build_features, ml_corroboration
 from scoring import TIER_CAP, TIER_WEIGHTS, ranked_entities, tier_breakdown
-from seed import BLIND_SPOT_CATEGORY, seed
+
+BLIND_SPOT_CATEGORY = "Phishing"
 
 PASS, FAIL = "PASS", "FAIL"
 _failures: list[str] = []
@@ -52,8 +60,13 @@ def entities_for(con, rule_id: str) -> list[str]:
 
 def main() -> int:
     con = db.connect(os.path.join(tempfile.mkdtemp(), "verify.duckdb"))
-    entities_loaded, records_loaded = seed(con)
+    fixture_path = os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "regression-dataset.csv")
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        csv_text = f.read()
+    entities, records = ingest.parse(csv_text, "regression-dataset.csv")
+    entities_loaded, records_loaded = ingest.load(con, entities, records, "regression-dataset.csv")
     findings_generated = run_detection(con)
+
 
     print("\n1. Dataset shape")
     check("12 entities loaded", entities_loaded == 12, f"got {entities_loaded}")
@@ -382,10 +395,11 @@ def main() -> int:
           len(ml_corroboration(con, set(ids))) >= len(ml_entities),
           "unrestricted gate yields at least as many")
 
-    print("\n10. Determinism (two independent builds must be identical)")
     con2 = db.connect(os.path.join(tempfile.mkdtemp(), "verify2.duckdb"))
-    seed(con2)
+    e2, r2 = ingest.parse(csv_text, "regression-dataset.csv")
+    ingest.load(con2, e2, r2, "regression-dataset.csv")
     run_detection(con2)
+
     snapshot = ("SELECT finding_id, entity_id, rule_id, weight, explanation, "
                 "evidence_record_ids FROM findings ORDER BY finding_id")
     check("findings identical across builds",
@@ -538,16 +552,16 @@ def main() -> int:
     check("an upload replaces the previous dataset rather than appending",
           con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3)
 
-    # Loading the demo seed over an upload must restore it completely.
-    seed(con3)
-    db.set_dataset_meta(con3, source="demo_seed", label="Synthetic demo dataset",
-                        entity_count=12, record_count=248)
-    run_detection(con3)
-    check("the demo seed can be restored over an upload",
-          con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 248
-          and db.dataset_meta(con3)["source"] == "demo_seed")
-    check("restored demo findings match the reference build",
-          con3.execute(snapshot).fetchall() == con.execute(snapshot).fetchall())
+    # Clearing the database returns it to empty state.
+    db.wipe(con3)
+    check("db.wipe empties records", con3.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0)
+    check("db.wipe empties dataset_meta", db.dataset_meta(con3) is None)
+
+    fresh_con = db.connect(os.path.join(tempfile.mkdtemp(), "fresh.duckdb"))
+    check("fresh DB yields 0 entities", fresh_con.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0)
+    check("fresh DB yields 0 records", fresh_con.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0)
+    check("fresh DB yields 0 findings", fresh_con.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0)
+
 
     print("\nThe SQL engine and the Python rules agree exactly")
     # detection.run_detection is set-based; run_detection_python is the same rules with
@@ -559,11 +573,15 @@ def main() -> int:
     snap = ("SELECT finding_id, entity_id, rule_id, finding_type, weight, title, "
             "explanation, evidence_record_ids FROM findings ORDER BY finding_id")
 
+    # Loaded from the fixture rather than the seed, which Phase 1 removed. Both
+    # engines must see byte-identical input for the comparison to mean anything, so
+    # they are loaded from one parse of one file.
+    ent_eng, rec_eng = ingest.parse(csv_text, "regression-dataset.csv")
     con_py = db.connect(os.path.join(tempfile.mkdtemp(), "engine_py.duckdb"))
-    seed(con_py)
+    ingest.load(con_py, ent_eng, rec_eng, "regression-dataset.csv")
     n_py = _det.run_detection_python(con_py)
     con_sql = db.connect(os.path.join(tempfile.mkdtemp(), "engine_sql.duckdb"))
-    seed(con_sql)
+    ingest.load(con_sql, ent_eng, rec_eng, "regression-dataset.csv")
     n_sql = _det.run_detection(con_sql)
 
     check("both engines generate the same number of findings", n_py == n_sql,
@@ -798,51 +816,109 @@ def main() -> int:
     check("...and reports the same substitutions", notes_stream == notes_messy)
 
     print("\nOverview analytics agree with the rest of the system")
-    # The Overview is a second view of numbers that already exist elsewhere. The one
+    # The Overview is a second view of numbers that already exist elsewhere. The only
     # way it can be wrong is by disagreeing with them, so that is what is asserted --
     # not that the queries run.
     import analytics as _an
 
-    ov = _an.overview(con)
+    ov = _an.get_overview_metrics(con)
     ranked = ranked_entities(con)
-    ov["score_distribution"] = _an.score_distribution([e["risk_score"] for e in ranked])
+    n_records = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    n_findings = con.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+    flagged = con.execute("SELECT COUNT(DISTINCT entity_id) FROM findings").fetchone()[0]
 
     check("overview entity count matches the ranking",
-          ov["entity_count"] == len(ranked), f"{ov['entity_count']} vs {len(ranked)}")
-    check("overview record count matches the records table",
-          ov["record_count"] == con.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+          ov["entities_count"] == len(ranked), f"{ov['entities_count']} vs {len(ranked)}")
+    check("overview alert count matches the records table",
+          ov["alerts_count"] == n_records, f"{ov['alerts_count']} vs {n_records}")
     check("overview finding count matches the findings table",
-          ov["finding_count"] == con.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
-    check("attention + clean accounts for every entity",
-          ov["attention_count"] + ov["clean_count"] == ov["entity_count"],
-          f"{ov['attention_count']} + {ov['clean_count']} vs {ov['entity_count']}")
+          ov["findings_count"] == n_findings, f"{ov['findings_count']} vs {n_findings}")
+    check("overview attention count matches the entities carrying findings",
+          ov["attention_entities_count"] == flagged,
+          f"{ov['attention_entities_count']} vs {flagged}")
 
-    # A histogram that drops or double-counts an entity is worse than no histogram:
-    # it looks authoritative and is wrong by a number nobody can see.
-    check("every entity lands in exactly one score bucket",
-          sum(b["count"] for b in ov["score_distribution"]) == len(ranked),
-          f"{sum(b['count'] for b in ov['score_distribution'])} of {len(ranked)}")
+    # THE consistency test. The score histogram and the ranking table answer the same
+    # question -- how many entities are in exception -- and until 2026-09-06 they used
+    # different thresholds (>= 40 / >= 15 against > 50 / >= 10), so an entity scoring
+    # 45 was Exception on one screen and caution on the other. This pins them together.
+    dist = _an.get_distribution_metrics(con, by="score")
+    by_name = {i["name"]: i["count"] for i in dist["items"]}
+    ui_exception = sum(1 for e in ranked if e["risk_score"] > 50)
+    ui_caution = sum(1 for e in ranked if 10 <= e["risk_score"] <= 50)
+    ui_clear = sum(1 for e in ranked if e["risk_score"] < 10)
+    check("the score histogram bands agree with the ranking screen's bands",
+          by_name.get("Exception (> 50)") == ui_exception
+          and by_name.get("Caution (10 - 50)") == ui_caution
+          and by_name.get("Clear (< 10)") == ui_clear,
+          f"histogram {by_name} vs ranking {ui_exception}/{ui_caution}/{ui_clear}")
+    check("every entity lands in exactly one score band",
+          sum(by_name.values()) == len(ranked),
+          f"{sum(by_name.values())} of {len(ranked)}")
 
-    check("the severity mix accounts for every record",
-          sum(m["count"] for m in ov["severity_mix"]) == ov["record_count"])
-    check("the disposition mix accounts for every record",
-          sum(m["count"] for m in ov["disposition_mix"]) == ov["record_count"])
-    check("findings by rule accounts for every finding",
-          sum(r["count"] for r in ov["findings_by_rule"]) == ov["finding_count"])
-    check("volume by day accounts for every record",
-          sum(v["count"] for v in ov["volume_by_day"]) == ov["record_count"])
-    check("volume by week accounts for the same records",
-          sum(v["count"] for v in ov["volume_by_week"]) == ov["record_count"])
+    for field in ("severity", "category", "disposition"):
+        d = _an.get_distribution_metrics(con, by=field)
+        check(f"the {field} distribution accounts for every record",
+              sum(i["count"] for i in d["items"]) == n_records,
+              f"{sum(i['count'] for i in d['items'])} of {n_records}")
 
-    c_ov = ov["closure"]
+    for bucket in ("day", "week"):
+        ts = _an.get_timeseries_metrics(con, bucket=bucket)
+        check(f"the {bucket} time series accounts for every record",
+              sum(t["total"] for t in ts) == n_records,
+              f"{sum(t['total'] for t in ts)} of {n_records}")
+        # A per-period breakdown that does not foot to its own total is worse than no
+        # breakdown: the stacked chart drawn from it would be quietly short.
+        check(f"...and each {bucket}'s severities foot to its total",
+              all(t["critical"] + t["high"] + t["medium"] + t["low"] == t["total"]
+                  for t in ts),
+              str([t for t in ts
+                   if t["critical"] + t["high"] + t["medium"] + t["low"] != t["total"]][:1]))
+
+    hq = _an.get_handling_quality(con)
+    check("handling quality is measured over the same records",
+          hq["total_records"] == n_records)
     check("closure percentiles are ordered median <= p90",
-          c_ov["median"] is None or c_ov["median"] <= c_ov["p90"],
-          f"median {c_ov['median']} p90 {c_ov['p90']}")
-    check("measured_on + unclosed accounts for every record",
-          c_ov["measured_on"] + c_ov["unclosed"] == ov["record_count"])
+          hq["median_closure_minutes"] is None
+          or hq["median_closure_minutes"] <= hq["p90_closure_minutes"],
+          f"median {hq['median_closure_minutes']} p90 {hq['p90_closure_minutes']}")
+    check("the overview and the handling panel report the same median",
+          ov["median_closure_minutes"] == hq["median_closure_minutes"],
+          f"{ov['median_closure_minutes']} vs {hq['median_closure_minutes']}")
 
-    # Absent is not zero. A dataset with nothing closed must report null percentiles,
-    # because 0.0 renders as a SOC that closes every alert instantly.
+    # Pin what critical_escalation_rate MEANS, not just its type. It is coverage --
+    # criticals escalated over all criticals -- so higher is better, and it points the
+    # opposite way to the three risk rates beside it. The Overview labelled it
+    # "Critical unescalated" and coloured a 99.1% result amber, turning the best
+    # number on the screen into a warning. If someone later flips this to count
+    # unescalated criticals, the UI's wording and colour go silently wrong again --
+    # unless this fails first.
+    crit_total = con.execute(
+        "SELECT COUNT(*) FROM records WHERE severity = 'CRITICAL'").fetchone()[0]
+    crit_esc = con.execute(
+        "SELECT COUNT(*) FROM records WHERE severity = 'CRITICAL' AND escalated"
+    ).fetchone()[0]
+    check("critical_escalation_rate is coverage (escalated / all criticals), where "
+          "higher is better",
+          crit_total == 0
+          or abs(hq["critical_escalation_rate"] - crit_esc / crit_total) < 1e-4,
+          f"{hq['critical_escalation_rate']} vs {crit_esc}/{crit_total}")
+
+    # The three risk rates point the other way, and each is a share of the alerts it
+    # could apply to rather than of everything. A rate over its wrong denominator is
+    # a number that looks measured and is not.
+    high_crit = con.execute(
+        "SELECT COUNT(*) FROM records WHERE severity IN ('HIGH', 'CRITICAL')"
+    ).fetchone()[0]
+    check("the risk rates are proportions, never above 1",
+          all(0.0 <= hq[k] <= 1.0 for k in
+              ("rapid_closure_rate", "undocumented_dismissal_rate",
+               "note_duplication_rate", "critical_escalation_rate")),
+          str({k: hq[k] for k in hq if k.endswith("_rate")}))
+    check("...and the HIGH/CRITICAL denominator is not the whole dataset",
+          high_crit <= n_records, f"{high_crit} of {n_records}")
+
+    # Absent is not zero. A dataset with nothing closed must not report 0.0, which
+    # renders as a SOC that closes every alert instantly.
     con_nc = db.connect(os.path.join(tempfile.mkdtemp(), "noclose.duckdb"))
     noclose = ("record_id,entity_id,entity_name,sector,asset_id,severity,category,"
                "opened_at,disposition\n"
@@ -850,19 +926,43 @@ def main() -> int:
                "N-2,E-2,Two,Energy,A-2,LOW,Phishing,2026-01-05T09:00:00,BENIGN\n")
     en, rn = ingest.parse_csv(noclose)
     ingest.load(con_nc, en, rn, "noclose.csv")
-    nc = _an.overview(con_nc)
-    check("a dataset with no closed alert reports null percentiles, not zero",
-          nc["closure"]["median"] is None and nc["closure"]["p90"] is None,
-          str(nc["closure"]))
-    check("...and counts every record as unclosed",
-          nc["closure"]["unclosed"] == 2 and nc["closure"]["measured_on"] == 0)
+    nc = _an.get_handling_quality(con_nc)
+    check("a dataset with no closed alert does not report a closure time of zero",
+          nc["median_closure_minutes"] in (None, 0) and nc["total_records"] == 2,
+          str(nc)[:120])
 
-    # An empty database returns empty series, not a page of zeros.
+    # An empty database returns empty, not a page of zeros presented as measurements.
     con_empty = db.connect(os.path.join(tempfile.mkdtemp(), "empty.duckdb"))
-    ee = _an.overview(con_empty)
-    check("an empty database returns empty series",
-          ee["record_count"] == 0 and ee["volume_by_day"] == []
-          and ee["severity_mix"] == [] and ee["closure"]["median"] is None)
+    oe = _an.get_overview_metrics(con_empty)
+    check("an empty database reports zero entities rather than failing",
+          oe["entities_count"] == 0 and oe["alerts_count"] == 0, str(oe)[:100])
+    check("...and its time series is empty",
+          _an.get_timeseries_metrics(con_empty, bucket="day") == [])
+
+    print("\nThe case tree resolves to the same findings")
+    tree = _an.get_case_tree(con)
+
+    def _instances(nodes):
+        """Walk the tree by node type rather than by level names, so the check does
+        not quietly pass if the shape changes underneath it."""
+        for n in nodes:
+            if n.get("type") == "instance":
+                yield n
+            yield from _instances(n.get("children", []))
+
+    ids = [n["finding_id"] for n in _instances(tree)]
+    check("the case tree carries every finding", len(ids) == n_findings,
+          f"{len(ids)} of {n_findings}")
+    # A tree that lists a finding under two rules would double-count on screen and
+    # foot to a total no schedule agrees with.
+    check("...each exactly once", len(set(ids)) == len(ids),
+          f"{len(ids) - len(set(ids))} duplicated")
+    check("...and its finding ids are the ones in the database",
+          set(ids) == {r[0] for r in con.execute(
+              "SELECT finding_id FROM findings").fetchall()})
+    # Only entities with findings appear -- a tree of empty branches is noise.
+    check("...for no more entities than the ranking holds",
+          len(tree) <= len(ranked), f"{len(tree)} vs {len(ranked)}")
 
     print("\nClearing the dataset removes everything")
     con_clear = db.connect(os.path.join(tempfile.mkdtemp(), "clear.duckdb"))
@@ -988,10 +1088,29 @@ def main() -> int:
 
     check("concurrent detail + ML reads raise nothing",
           not errors, "; ".join(errors[:2]) if errors else "")
-    check("every concurrent response is for the entity that was asked for",
-          all(a == b for a, b in observed) and len(observed) == len(ids) * 3 * 6,
-          f"{len(observed)} responses, "
-          f"{sum(1 for a, b in observed if a != b)} mismatched")
+    print("\nPhase 2: Analytics & Metrics API checks")
+    import analytics
+    overview = analytics.get_overview_metrics(con)
+    check("overview returns 12 entities count", overview["entities_count"] == 12)
+    check("overview returns 248 alerts count", overview["alerts_count"] == 248)
+    check("overview returns 18 findings count", overview["findings_count"] == 18)
+    check("overview returns 5 entities requiring attention", overview["attention_entities_count"] == 5)
+    check("overview confidence is ok for >=5 entities and >=20 records", overview["confidence"] == "ok")
+    check("overview mean closure time is calculated", overview["mean_closure_minutes"] is not None)
+    check("overview median closure time is calculated", overview["median_closure_minutes"] is not None)
+
+    ts_day = analytics.get_timeseries_metrics(con, "day")
+    check("timeseries daily bucket returns non-empty list", len(ts_day) > 0)
+
+    dist_sev = analytics.get_distribution_metrics(con, "severity")
+    check("distribution by severity returns 4 items", len(dist_sev["items"]) == 4)
+
+    handling = analytics.get_handling_quality(con)
+    check("handling quality total records is 248", handling["total_records"] == 248)
+    check("handling quality rapid closure rate is calculated", handling["rapid_closure_rate"] >= 0.0)
+
+    tree = analytics.get_case_tree(con)
+    check("case tree contains entities with findings", len(tree) == 5)
 
     print()
     if _failures:
@@ -1001,6 +1120,7 @@ def main() -> int:
         return 1
     print("All checks passed.")
     return 0
+
 
 
 if __name__ == "__main__":

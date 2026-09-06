@@ -16,7 +16,7 @@ Every figure here is measured, not estimated. Where a number is a projection it 
 | Python | 3.11.15 |
 | DuckDB | 1.5.5 |
 | scikit-learn / shap | 1.9.0 / 0.51.0 |
-| Regression suite | **165 checks, 0 failures** |
+| Regression suite | **190 checks, 0 failures** |
 
 **Method.** Each configuration is run twice in a fresh process and the second, warm run is
 reported. The first run in any sweep pays one-off costs — importing scikit-learn and
@@ -227,5 +227,5 @@ python scripts/make-soc-dataset.py --out samples/soc-dataset.csv
 python scripts/bench.py samples/soc-dataset.csv
 
 # correctness
-cd backend && python verify.py     # expect: All checks passed. (165)
+cd backend && python verify.py     # expect: All checks passed. (190)
 ```
