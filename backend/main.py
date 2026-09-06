@@ -21,11 +21,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+import analytics
 import db
 import ingest
 import models
 from detection import run_detection
 from scoring import entity_scores, ranked_entities
+
 
 RECORD_COLUMNS = [
     "record_id", "entity_id", "asset_id", "severity", "category", "opened_at",
@@ -219,9 +221,54 @@ def entity_ml_profile(entity_id: str):
     }
 
 
+# --- Analytics endpoints (v2 Analytics Workspace) --------------------------------
+
+@app.get("/api/analytics/overview")
+@serialised
+def analytics_overview():
+    """Headline dataset metrics."""
+    return analytics.get_overview_metrics(app.state.con)
+
+
+@app.get("/api/analytics/timeseries")
+@serialised
+def analytics_timeseries(bucket: str = "day"):
+    """Time-series alert volume bucketed by day or week."""
+    if bucket not in ("day", "week"):
+        raise HTTPException(status_code=400, detail={"error": "bucket must be 'day' or 'week'"})
+    return analytics.get_timeseries_metrics(app.state.con, bucket=bucket)
+
+
+@app.get("/api/analytics/distribution")
+@serialised
+def analytics_distribution(by: str = "severity"):
+    """Distribution metric breakdowns."""
+    if by not in ("severity", "category", "disposition", "score"):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "by must be one of severity, category, disposition, score"}
+        )
+    return analytics.get_distribution_metrics(app.state.con, by=by)
+
+
+@app.get("/api/analytics/handling")
+@serialised
+def analytics_handling():
+    """Handling quality percentiles and risk indicators."""
+    return analytics.get_handling_quality(app.state.con)
+
+
+@app.get("/api/tree")
+@serialised
+def case_tree():
+    """Full 5-level case tree: Entity -> Tier -> Rule -> Instance -> Records."""
+    return analytics.get_case_tree(app.state.con)
+
+
 @app.get("/api/dataset", response_model=models.DatasetInfo)
 @serialised
 def dataset_info():
+
     """Provenance for the loaded dataset, shown in the masthead."""
     meta = db.dataset_meta(app.state.con)
     if meta is None:
